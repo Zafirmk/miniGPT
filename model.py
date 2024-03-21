@@ -36,3 +36,22 @@ class PositionalEmbeddings(nn.Module):
     def forward(self, x):
         with torch.no_grad():
             return x + self.p_embed_table[:, :x.shape[1], :]
+class MultiHeadAttention(nn.Module):
+    pass
+
+class FeedForward(nn.Module):
+    pass
+
+class ResidualConnection(nn.Module):
+    pass
+
+
+# we = WordEmbeddings(4, 24)
+# pe = PositionalEmbeddings(4, 10)
+# ln = nn.LayerNorm(4)
+
+# s = "I wonder what will come next"
+# tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
+
+# word_embed = we(tokens)
+# pos_embed = pe(word_embed)

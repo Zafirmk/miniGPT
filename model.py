@@ -15,7 +15,6 @@ class WordEmbeddings(nn.Module):
     def forward(self, x):
         return self.embedding_table(x) * torch.sqrt(torch.tensor(self.d_model))
 
-
 class PositionalEmbeddings(nn.Module):
     def __init__(self, d_model, seq_len, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -36,22 +35,36 @@ class PositionalEmbeddings(nn.Module):
     def forward(self, x):
         with torch.no_grad():
             return x + self.p_embed_table[:, :x.shape[1], :]
-class MultiHeadAttention(nn.Module):
-    pass
-
 class FeedForward(nn.Module):
-    pass
+    def __init__(self, d_model, d_hidden, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.d_model = d_model
+        self.d_hidden = d_hidden
+        self.relu = torch.nn.ReLU()
+        self.linear1 = torch.nn.Linear(d_model, d_hidden)
+        self.linear2 = torch.nn.Linear(d_hidden, d_model)
+    
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.relu(x)
+        x = self.linear2(x)
+        return x
 
 class ResidualConnection(nn.Module):
+    pass
+
+class MultiHeadAttention(nn.Module):
     pass
 
 
 # we = WordEmbeddings(4, 24)
 # pe = PositionalEmbeddings(4, 10)
-# ln = nn.LayerNorm(4)
+# ff = FeedForward(4, 20)
 
 # s = "I wonder what will come next"
 # tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
 
 # word_embed = we(tokens)
 # pos_embed = pe(word_embed)
+# post_ff = ff(pos_embed)
+# print(pos_embed.shape)

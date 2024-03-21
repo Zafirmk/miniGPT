@@ -44,6 +44,7 @@ class FeedForward(nn.Module):
         self.linear1 = torch.nn.Linear(d_model, d_hidden)
         self.linear2 = torch.nn.Linear(d_hidden, d_model)
     
+    # (batch, seq_len, d_model) --> (batch, seq_len, d_hidden) --> (batch, seq_len, d_model)
     def forward(self, x):
         x = self.linear1(x)
         x = self.relu(x)
@@ -51,7 +52,13 @@ class FeedForward(nn.Module):
         return x
 
 class ResidualConnection(nn.Module):
-    pass
+    def __init__(self, d_model, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.layer_norm = torch.nn.LayerNorm(d_model)
+    
+    def forward(self, x, sublayer):
+        f = sublayer(x)
+        return self.layer_norm(torch.add(f, x))
 
 class MultiHeadAttention(nn.Module):
     pass
@@ -60,11 +67,14 @@ class MultiHeadAttention(nn.Module):
 # we = WordEmbeddings(4, 24)
 # pe = PositionalEmbeddings(4, 10)
 # ff = FeedForward(4, 20)
+# rs = ResidualConnection(4)
 
 # s = "I wonder what will come next"
 # tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
 
 # word_embed = we(tokens)
 # pos_embed = pe(word_embed)
-# post_ff = ff(pos_embed)
-# print(pos_embed.shape)
+# post_rs = rs(pos_embed, ff)
+
+
+# print(post_rs)

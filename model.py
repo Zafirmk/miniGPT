@@ -13,17 +13,17 @@ class WordEmbeddings(nn.Module):
             num_embeddings=self.vocab_size,
         )
     
-    def forward(self, x):
+    def forward(self, x) -> torch.Tensor:
         return self.embedding_table(x) * torch.sqrt(torch.tensor(self.d_model))
 
 class PositionalEmbeddings(nn.Module):
-    def __init__(self, d_model: int, seq_len: int, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, max_seq_len: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.d_model = d_model
-        self.seq_len = seq_len
+        self.max_seq_len = max_seq_len
 
-        p_embed_table = torch.zeros((self.seq_len, self.d_model))
-        position = torch.arange(0, seq_len).unsqueeze(1) # (seq_len, 1)
+        p_embed_table = torch.zeros((self.max_seq_len, self.d_model))
+        position = torch.arange(0, max_seq_len).unsqueeze(1) # (seq_len, 1)
         div_term = torch.exp(-1 * (torch.arange(0, d_model, 2).float() * (torch.log(torch.tensor(10000.0)) / self.d_model))).unsqueeze(0) # (1, d_model)
 
         p_embed_table[:, 0::2] = torch.sin(position * div_term)
@@ -33,7 +33,7 @@ class PositionalEmbeddings(nn.Module):
 
         self.register_buffer('p_embed_table', p_embed_table)
     
-    def forward(self, x):
+    def forward(self, x) -> torch.Tensor:
         with torch.no_grad():
             return x + self.p_embed_table[:, :x.shape[1], :]
 class FeedForward(nn.Module):
@@ -46,7 +46,7 @@ class FeedForward(nn.Module):
         self.linear2 = torch.nn.Linear(d_hidden, d_model)
     
     # (batch, seq_len, d_model) --> (batch, seq_len, d_hidden) --> (batch, seq_len, d_model)
-    def forward(self, x):
+    def forward(self, x) -> torch.Tensor:
         x = self.linear1(x)
         x = self.relu(x)
         x = self.linear2(x)
@@ -57,7 +57,7 @@ class ResidualConnection(nn.Module):
         super().__init__(*args, **kwargs)
         self.layer_norm = torch.nn.LayerNorm(d_model)
     
-    def forward(self, x, sublayer):
+    def forward(self, x, sublayer) -> torch.Tensor:
         f = sublayer(x)
         return self.layer_norm(torch.add(f, x))
 
@@ -78,7 +78,7 @@ class MultiHeadAttention(nn.Module):
         self.w_v = torch.randn((self.d_model, self.d_model))
         self.w_o = torch.randn((self.d_model, self.d_model))
     
-    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
         denominator = np.sqrt(self.d_k)
         attention = self.softmax(numerator/denominator)
@@ -86,7 +86,7 @@ class MultiHeadAttention(nn.Module):
             attention = attention @ self.mask
         return attention @ v
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_ = q @ self.w_q
         k_ = k @ self.w_k
         v_ = v @ self.w_v
@@ -103,19 +103,51 @@ class MultiHeadAttention(nn.Module):
 
         return h @ self.w_o
 
+class EncoderBlock(nn.Module):
+    def __init__(self, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.d_model = d_model
+        self.d_hidden = d_hidden
+        self.num_heads = num_heads
+        self.MHA = MultiHeadAttention(self.d_model, self.num_heads)
+        self.FF = FeedForward(self.d_model, self.d_hidden)
+        self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(2)]) 
+    
+    def forward(self, x) -> torch.Tensor:
+        x = self.RCs[0](x, lambda x: self.MHA(q=x, k=x, v=x))
+        x = self.RCs[1](x, self.FF)
+        return x
 
-# we = WordEmbeddings(512, 24)
-# pe = PositionalEmbeddings(512, 10)
-# ff = FeedForward(4, 20)
-# rs = ResidualConnection(4)
-# ma = MultiHeadAttention(512, 8)
+class Encoder(nn.Module):
+    def __init__(self, num_blocks: int, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.num_blocks = num_blocks
+        self.d_model = d_model
+        self.d_hidden = d_hidden
+        self.num_heads = num_heads
+        self.encoders = nn.ModuleList([EncoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
 
-# s = "I wonder what will come next"
-# tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
+    def forward(self, x) -> torch.Tensor:
+        for enc in self.encoders:
+            x = enc(x)
+        return x
 
-# word_embed = we(tokens)
-# pos_embed = pe(word_embed)
-# post_ma = ma(pos_embed, pos_embed, pos_embed)
+if __name__ == "__main__":
+    d_model = 512
+    vocab_size = 24
+    max_seq_len = 10
+    d_hidden = 2048
+    num_heads = 4
+    num_blocks = 6
 
+    we = WordEmbeddings(d_model, vocab_size)
+    pe = PositionalEmbeddings(d_model, max_seq_len)
+    enc = Encoder(num_blocks, d_model, d_hidden, num_heads)
 
-# print(post_rs)
+    s = "I wonder what will come next"
+    tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
+
+    word_embed = we(tokens)
+    pos_embed = pe(word_embed)
+    enc_output = enc(pos_embed)
+    print(enc_output.shape)

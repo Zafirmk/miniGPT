@@ -173,6 +173,25 @@ class ProjectionLayer(nn.Module):
         x = self.linear(x)
         return x
 
+class Transformer(nn.Module):
+    def __init__(self, encoder: Encoder, decoder: Decoder, projection: ProjectionLayer, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.projection = projection
+    
+    def encode(self):
+        pass
+
+    def decode(self):
+        pass
+
+    def project(self):
+        pass
+
+
+def create_model():
+    pass
 
 if __name__ == "__main__":
     d_model = 512

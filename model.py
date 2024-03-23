@@ -163,6 +163,17 @@ class Decoder(nn.Module):
             x = dec(x, enc_k, enc_v)
         return x
 
+class ProjectionLayer(nn.Module):
+    def __init__(self, d_model: int, vocab_size: int, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.linear = torch.nn.Linear(d_model, vocab_size)
+    
+    def forward(self, x):
+        # (batch, seq_len, d_model) --->  (batch, seq_len, vocab_size)
+        x = self.linear(x)
+        return x
+
+
 if __name__ == "__main__":
     d_model = 512
     vocab_size = 24

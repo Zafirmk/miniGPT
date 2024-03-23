@@ -132,6 +132,37 @@ class Encoder(nn.Module):
             x = enc(x)
         return x
 
+class DecoderBlock(nn.Module):
+    def __init__(self, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.d_model = d_model
+        self.d_hidden = d_hidden
+        self.num_heads = num_heads
+        self.MMHA = MultiHeadAttention(self.d_model, self.num_heads, mask=None)
+        self.MHA = MultiHeadAttention(self.d_model, self.num_heads)
+        self.FF = FeedForward(self.d_model, self.d_hidden)
+        self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(3)])
+    
+    def forward(self, x, enc_k, enc_v) -> torch.Tensor:
+        x = self.RCs[0](x, lambda x: self.MMHA(q=x, k=x, v=x))
+        x = self.RCs[1](x, lambda x: self.MHA(q=x, k=enc_k, v=enc_v))
+        x = self.RCs[2](x, self.FF)
+        return x
+
+class Decoder(nn.Module):
+    def __init__(self, num_blocks: int, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.num_blocks = num_blocks
+        self.d_model = d_model
+        self.d_hidden = d_hidden
+        self.num_heads = num_heads
+        self.decoders = nn.ModuleList([DecoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
+    
+    def forward(self, x, enc_k, enc_v) -> torch.Tensor:
+        for dec in self.decoders:
+            x = dec(x, enc_k, enc_v)
+        return x
+
 if __name__ == "__main__":
     d_model = 512
     vocab_size = 24

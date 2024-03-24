@@ -173,25 +173,41 @@ class ProjectionLayer(nn.Module):
         x = self.linear(x)
         return x
 
-class Transformer(nn.Module):
-    def __init__(self, encoder: Encoder, decoder: Decoder, projection: ProjectionLayer, *args, **kwargs) -> None:
+class EncoderDecoderTransformer(nn.Module):
+    def __init__(self, num_blocks: int, num_heads: int, d_model: int, d_hidden: int, vocab_size: int, max_seq_len: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.encoder = encoder
-        self.decoder = decoder
-        self.projection = projection
+        self.encoder = Encoder(num_blocks, d_model, d_hidden, num_heads)
+        self.decoder = Decoder(num_blocks, d_model, d_hidden, num_heads)
+        self.projection = ProjectionLayer(d_model, vocab_size)
+        self.enc_vocab = WordEmbeddings(d_model, vocab_size)
+        self.dec_vocab = WordEmbeddings(d_model, vocab_size)
+        self.positional_enc = PositionalEmbeddings(d_model, max_seq_len)
     
-    def encode(self):
-        pass
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.enc_vocab(x)
+        x = self.positional_enc(x)
+        x = self.encoder(x)
+        return x
 
-    def decode(self):
-        pass
+    def decode(self, x: torch.Tensor, enc_k: torch.Tensor, enc_v: torch.Tensor) -> torch.Tensor:
+        x = self.dec_vocab(x)
+        x = self.positional_enc(x)
+        x = self.decoder(x, enc_k, enc_v)
+        return x
 
-    def project(self):
-        pass
+    def project(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.projection(x)
+        return x
+    
+    def forward(self, enc_input: torch.Tensor, dec_input: torch.Tensor) -> torch.Tensor:
+        enc_output = self.encode(enc_input)
+        dec_output = self.decode(dec_input, enc_output, enc_output)
+        return self.project(dec_output)
 
 
-def create_model():
-    pass
+def create_model(model_type, **kwargs) -> EncoderDecoderTransformer:
+    model = model_type(**kwargs)
+    return model
 
 if __name__ == "__main__":
     d_model = 512
@@ -201,14 +217,15 @@ if __name__ == "__main__":
     num_heads = 4
     num_blocks = 6
 
-    we = WordEmbeddings(d_model, vocab_size)
-    pe = PositionalEmbeddings(d_model, max_seq_len)
-    enc = Encoder(num_blocks, d_model, d_hidden, num_heads)
-
     s = "I wonder what will come next"
     tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
 
-    word_embed = we(tokens)
-    pos_embed = pe(word_embed)
-    enc_output = enc(pos_embed)
-    print(enc_output.shape)
+    model = create_model(
+        EncoderDecoderTransformer,
+        d_model = d_model,
+        vocab_size = vocab_size,
+        max_seq_len = max_seq_len,
+        d_hidden = d_hidden,
+        num_heads = num_heads,
+        num_blocks = num_blocks
+    )

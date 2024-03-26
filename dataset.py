@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 import torch
 from datasets import load_dataset
 
-class EnglishFrenchData(Dataset):
+class LanguageData(Dataset):
     def __init__(self, data_path, enc_tokenizer, dec_tokenizer) -> None:
         super().__init__()
         self.data_path = data_path
@@ -26,12 +26,13 @@ class EnglishFrenchData(Dataset):
         label = torch.tensor([1])
 
         return {
+            'enc_lang_text': enc_lang_text,
             'enc_tokens': enc_tokens,
-            'dec_tokens': dec_tokens,
             'enc_mask': enc_mask,
+
+            'dec_lang_text': dec_lang_text,
+            'dec_tokens': dec_tokens,
             'dec_mask': dec_mask,
+            
             'label': label
         }
-
-data = EnglishFrenchData("./data.parquet", "", "")
-print(data[0])

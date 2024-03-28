@@ -62,7 +62,7 @@ class ResidualConnection(nn.Module):
         return self.layer_norm(torch.add(f, x))
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, mask: torch.Tensor = None, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, num_heads: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -71,22 +71,22 @@ class MultiHeadAttention(nn.Module):
         self.softmax = torch.nn.Softmax(dim=-1)
         self.d_model = d_model
         self.num_heads = num_heads
-        self.mask = mask
 
         self.w_q = torch.randn((self.d_model, self.d_model))
         self.w_k = torch.randn((self.d_model, self.d_model))
         self.w_v = torch.randn((self.d_model, self.d_model))
         self.w_o = torch.randn((self.d_model, self.d_model))
     
-    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
         denominator = np.sqrt(self.d_k)
         attention = self.softmax(numerator/denominator)
-        if self.mask:
-            attention = attention @ self.mask
+        # print(attention.shape)
+        if mask is not None:
+            attention = attention @ mask
         return attention @ v
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         q_ = q @ self.w_q
         k_ = k @ self.w_k
         v_ = v @ self.w_v
@@ -96,7 +96,7 @@ class MultiHeadAttention(nn.Module):
         k_ = k_.view(k_.shape[0], self.num_heads, k.shape[1], int(self.d_k))
         v_ = v_.view(v_.shape[0], self.num_heads, v.shape[1], int(self.d_k))
 
-        attention_heads = self.attention(q_, k_, v_)
+        attention_heads = self.attention(q_, k_, v_, mask)
 
         # (batch, num_heads, seq, d_k) ---> (batch, seq, d_model)
         h = attention_heads.view(attention_heads.shape[0], attention_heads.shape[2], attention_heads.shape[1]*attention_heads.shape[3])
@@ -113,8 +113,8 @@ class EncoderBlock(nn.Module):
         self.FF = FeedForward(self.d_model, self.d_hidden)
         self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(2)]) 
     
-    def forward(self, x) -> torch.Tensor:
-        x = self.RCs[0](x, lambda x: self.MHA(q=x, k=x, v=x))
+    def forward(self, x, mask) -> torch.Tensor:
+        x = self.RCs[0](x, lambda x: self.MHA(q=x, k=x, v=x, mask=mask))
         x = self.RCs[1](x, self.FF)
         return x
 
@@ -127,9 +127,9 @@ class Encoder(nn.Module):
         self.num_heads = num_heads
         self.encoders = nn.ModuleList([EncoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
 
-    def forward(self, x) -> torch.Tensor:
+    def forward(self, x, mask) -> torch.Tensor:
         for enc in self.encoders:
-            x = enc(x)
+            x = enc(x, mask)
         return x
 
 class DecoderBlock(nn.Module):
@@ -138,14 +138,14 @@ class DecoderBlock(nn.Module):
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_heads = num_heads
-        self.MMHA = MultiHeadAttention(self.d_model, self.num_heads, mask=None)
+        self.MMHA = MultiHeadAttention(self.d_model, self.num_heads)
         self.MHA = MultiHeadAttention(self.d_model, self.num_heads)
         self.FF = FeedForward(self.d_model, self.d_hidden)
         self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(3)])
     
-    def forward(self, x, enc_k, enc_v) -> torch.Tensor:
-        x = self.RCs[0](x, lambda x: self.MMHA(q=x, k=x, v=x))
-        x = self.RCs[1](x, lambda x: self.MHA(q=x, k=enc_k, v=enc_v))
+    def forward(self, x, enc_k, enc_v, enc_mask, dec_mask) -> torch.Tensor:
+        x = self.RCs[0](x, lambda x: self.MMHA(q=x, k=x, v=x, mask=dec_mask))
+        x = self.RCs[1](x, lambda x: self.MHA(q=x, k=enc_k, v=enc_v, mask=enc_mask))
         x = self.RCs[2](x, self.FF)
         return x
 
@@ -158,9 +158,9 @@ class Decoder(nn.Module):
         self.num_heads = num_heads
         self.decoders = nn.ModuleList([DecoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
     
-    def forward(self, x, enc_k, enc_v) -> torch.Tensor:
+    def forward(self, x, enc_k, enc_v, enc_mask, dec_mask) -> torch.Tensor:
         for dec in self.decoders:
-            x = dec(x, enc_k, enc_v)
+            x = dec(x, enc_k, enc_v, enc_mask, dec_mask)
         return x
 
 class ProjectionLayer(nn.Module):
@@ -183,25 +183,25 @@ class EncoderDecoderTransformer(nn.Module):
         self.dec_vocab = WordEmbeddings(d_model, vocab_size)
         self.positional_enc = PositionalEmbeddings(d_model, max_seq_len)
     
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         x = self.enc_vocab(x)
         x = self.positional_enc(x)
-        x = self.encoder(x)
+        x = self.encoder(x, mask)
         return x
 
-    def decode(self, x: torch.Tensor, enc_k: torch.Tensor, enc_v: torch.Tensor) -> torch.Tensor:
+    def decode(self, x: torch.Tensor, enc_k: torch.Tensor, enc_v: torch.Tensor, enc_mask: torch.Tensor, dec_mask: torch.Tensor) -> torch.Tensor:
         x = self.dec_vocab(x)
         x = self.positional_enc(x)
-        x = self.decoder(x, enc_k, enc_v)
+        x = self.decoder(x, enc_k, enc_v, enc_mask, dec_mask)
         return x
 
     def project(self, x: torch.Tensor) -> torch.Tensor:
         x = self.projection(x)
         return x
     
-    def forward(self, enc_input: torch.Tensor, dec_input: torch.Tensor) -> torch.Tensor:
-        enc_output = self.encode(enc_input)
-        dec_output = self.decode(dec_input, enc_output, enc_output)
+    def forward(self, enc_input: torch.Tensor, dec_input: torch.Tensor, enc_mask: torch.Tensor, dec_mask: torch.Tensor) -> torch.Tensor:
+        enc_output = self.encode(enc_input, enc_mask)
+        dec_output = self.decode(dec_input, enc_output, enc_output, enc_mask, dec_mask)
         return self.project(dec_output)
 
 
@@ -215,10 +215,12 @@ if __name__ == "__main__":
     max_seq_len = 10
     d_hidden = 2048
     num_heads = 4
-    num_blocks = 6
+    num_blocks = 2
 
     s = "I wonder what will come next"
     tokens = torch.LongTensor([[11, 23, 21, 22, 5, 15]])
+    enc_mask = torch.ones((6, 6))
+    dec_mask = torch.ones((6, 6))
 
     model = create_model(
         EncoderDecoderTransformer,
@@ -229,3 +231,5 @@ if __name__ == "__main__":
         num_heads = num_heads,
         num_blocks = num_blocks
     )
+    # print(tokens.shape)
+    model(tokens, tokens, enc_mask, dec_mask)

@@ -2,9 +2,7 @@ from torch.utils.data import Dataset
 import torch
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
-from tokenizer import get_or_create_tokenizer
-from torch.utils.data import DataLoader
-max_seq_len = 100
+from config import get_config
 class LanguageData(Dataset):
     def __init__(self, data_path: str, enc_tokenizer: PreTrainedTokenizerFast, dec_tokenizer: PreTrainedTokenizerFast) -> None:
         super().__init__()
@@ -12,9 +10,14 @@ class LanguageData(Dataset):
         self.enc_tokenizer = enc_tokenizer
         self.dec_tokenizer = dec_tokenizer
         self.data = load_dataset("parquet", data_files = self.data_path, split='train')
+        self.max_seq_len = get_config()['max_seq_len']
 
     def __len__(self):
         return self.data.num_rows
+    
+    def causal_mask(self, size):
+        mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
+        return mask == 0
 
     def __getitem__(self, index):
 
@@ -27,7 +30,7 @@ class LanguageData(Dataset):
 
         enc_tokenizer_output = self.enc_tokenizer(
             enc_lang_text,
-            max_length=max_seq_len,
+            max_length=self.max_seq_len,
             truncation=True,
             padding='max_length',
             add_special_tokens=True,
@@ -37,14 +40,14 @@ class LanguageData(Dataset):
 
         dec_tokenizer_output = self.dec_tokenizer(
             dec_lang_text,
-            max_length=max_seq_len-1,
+            max_length=self.max_seq_len-1,
             truncation=True,
             add_special_tokens=False,
             return_token_type_ids=False,
             return_tensors='pt'
         )
 
-        dec_padding_tokens = (max_seq_len - len(dec_tokenizer_output['input_ids'].squeeze(0))) - 1
+        dec_padding_tokens = (self.max_seq_len - len(dec_tokenizer_output['input_ids'].squeeze(0))) - 1
 
         enc_tokens = enc_tokenizer_output['input_ids'].squeeze(0)
         dec_tokens = torch.cat([
@@ -57,8 +60,9 @@ class LanguageData(Dataset):
                 torch.tensor([dec_pad_token] * dec_padding_tokens, dtype=torch.int64)
             ])
 
-        enc_mask: torch.Tensor = enc_tokenizer_output['attention_mask'].expand(max_seq_len, -1)
+        enc_mask = enc_tokenizer_output['attention_mask'].expand(self.max_seq_len, -1)
         dec_mask = (dec_tokens != dec_pad_token).int()
+        dec_mask = (dec_mask & self.causal_mask(dec_tokens.size(0))).squeeze(0)
 
         label = torch.cat([
             dec_tokenizer_output['input_ids'].squeeze(0),
@@ -75,6 +79,5 @@ class LanguageData(Dataset):
             'dec_tokens': dec_tokens,
             
             'dec_mask': dec_mask,
-            'label': label,
-            
+            'label': label,   
         }

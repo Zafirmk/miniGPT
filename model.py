@@ -1,10 +1,5 @@
 import torch
 import torch.nn as nn
-import numpy as np
-from tokenizer import get_or_create_tokenizer
-from torch.utils.data import DataLoader
-from dataset import LanguageData
-torch.manual_seed(1)
 
 class WordEmbeddings(nn.Module):
     def __init__(self, d_model: int, vocab_size: int, *args, **kwargs) -> None:
@@ -84,17 +79,16 @@ class MultiHeadAttention(nn.Module):
     def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
         denominator = torch.sqrt(torch.tensor(self.d_k, dtype=q.dtype))
-        # (batch, num_heads, )
+        # (batch, num_heads, seq_len, seq_len)
         attention_scores = numerator / denominator
         if mask is not None:
+            # (batch, seq_len, seq_len) --> (batch, num_heads, seq_len, seq_len)
             mask = mask.unsqueeze(1).expand(-1, attention_scores.shape[1], -1, -1)
             attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
         attention_probs = self.softmax(attention_scores)
         output = attention_probs @ v
         return output
 
-# [16, 4, 25, 25]
-#    [16, 25, 25]
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         q_ = q @ self.w_q
         k_ = k @ self.w_k
@@ -214,59 +208,9 @@ class EncoderDecoderTransformer(nn.Module):
         return self.project(dec_output)
 
 
-def create_model(model_type, **kwargs) -> EncoderDecoderTransformer:
+def create_model(model_type: EncoderDecoderTransformer, **kwargs) -> EncoderDecoderTransformer:
     model = model_type(**kwargs)
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
     return model
-
-if __name__ == "__main__":
-    d_model = 8
-    vocab_size = 141
-    max_seq_len = 100
-    d_hidden = 2048
-    num_heads = 4
-    num_blocks = 2
-
-    enc_tokenizer = get_or_create_tokenizer(
-        "en", "./tokenizers/enc.json", bos_token='<s>', eos_token='</s>', pad_token='[PAD]', vocab_size=vocab_size, data_path='./data.parquet', batch_size=32
-    )
-
-    dec_tokenizer = get_or_create_tokenizer(
-        "fr", "./tokenizers/dec.json", bos_token='<s>', eos_token='</s>', pad_token='[PAD]', vocab_size=vocab_size, data_path='./data.parquet', batch_size=32
-    )
-
-    data = LanguageData(
-        "./data.parquet",
-        enc_tokenizer,
-        dec_tokenizer
-    )
-
-    train_dataloader = DataLoader(
-        dataset=data,
-        batch_size=16,
-        drop_last=True
-    )
-
-    sample = (next(iter(train_dataloader)))
-
-    enc_tokens = sample['enc_tokens']
-    dec_tokens = sample['dec_tokens']
-    enc_mask = sample['enc_mask']
-    dec_mask = sample['dec_mask']
-    dec_text = sample['dec_lang_text']
-
-    print(enc_mask.shape)
-    print(dec_mask.shape)
-
-
-
-    model = create_model(
-        EncoderDecoderTransformer,
-        d_model = d_model,
-        vocab_size = vocab_size,
-        max_seq_len = max_seq_len,
-        d_hidden = d_hidden,
-        num_heads = num_heads,
-        num_blocks = num_blocks
-    )
-
-    model(enc_tokens, dec_tokens, enc_mask, dec_mask)

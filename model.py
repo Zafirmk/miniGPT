@@ -84,13 +84,17 @@ class MultiHeadAttention(nn.Module):
     def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
         denominator = torch.sqrt(torch.tensor(self.d_k, dtype=q.dtype))
+        # (batch, num_heads, )
         attention_scores = numerator / denominator
         if mask is not None:
+            mask = mask.unsqueeze(1).expand(-1, attention_scores.shape[1], -1, -1)
             attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
         attention_probs = self.softmax(attention_scores)
         output = attention_probs @ v
         return output
 
+# [16, 4, 25, 25]
+#    [16, 25, 25]
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         q_ = q @ self.w_q
         k_ = k @ self.w_k
@@ -217,7 +221,7 @@ def create_model(model_type, **kwargs) -> EncoderDecoderTransformer:
 if __name__ == "__main__":
     d_model = 8
     vocab_size = 141
-    max_seq_len = 25
+    max_seq_len = 100
     d_hidden = 2048
     num_heads = 4
     num_blocks = 2
@@ -238,14 +242,20 @@ if __name__ == "__main__":
 
     train_dataloader = DataLoader(
         dataset=data,
-        batch_size=1,
+        batch_size=16,
+        drop_last=True
     )
 
     sample = (next(iter(train_dataloader)))
+
     enc_tokens = sample['enc_tokens']
     dec_tokens = sample['dec_tokens']
     enc_mask = sample['enc_mask']
     dec_mask = sample['dec_mask']
+    dec_text = sample['dec_lang_text']
+
+    print(enc_mask.shape)
+    print(dec_mask.shape)
 
 
 

@@ -177,13 +177,13 @@ class ProjectionLayer(nn.Module):
         return x
 
 class EncoderDecoderTransformer(nn.Module):
-    def __init__(self, num_blocks: int, num_heads: int, d_model: int, d_hidden: int, vocab_size: int, max_seq_len: int, *args, **kwargs) -> None:
+    def __init__(self, num_blocks: int, num_heads: int, d_model: int, d_hidden: int, enc_vocab_size: int, dec_vocab_size: int, max_seq_len: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.encoder = Encoder(num_blocks, d_model, d_hidden, num_heads)
         self.decoder = Decoder(num_blocks, d_model, d_hidden, num_heads)
-        self.projection = ProjectionLayer(d_model, vocab_size)
-        self.enc_vocab = WordEmbeddings(d_model, vocab_size)
-        self.dec_vocab = WordEmbeddings(d_model, vocab_size)
+        self.projection = ProjectionLayer(d_model, dec_vocab_size)
+        self.enc_vocab = WordEmbeddings(d_model, enc_vocab_size)
+        self.dec_vocab = WordEmbeddings(d_model, dec_vocab_size)
         self.positional_enc = PositionalEmbeddings(d_model, max_seq_len)
     
     def encode(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

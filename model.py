@@ -82,8 +82,6 @@ class MultiHeadAttention(nn.Module):
         # (batch, num_heads, seq_len, seq_len)
         attention_scores = numerator / denominator
         if mask is not None:
-            # (batch, seq_len, seq_len) --> (batch, num_heads, seq_len, seq_len)
-            mask = mask.unsqueeze(1).expand(-1, attention_scores.shape[1], -1, -1)
             attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
         attention_probs = self.softmax(attention_scores)
         output = attention_probs @ v

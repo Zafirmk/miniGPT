@@ -5,8 +5,8 @@ config = {
     "max_seq_len": 350,
     "d_hidden": 2048,
     "num_heads": 8,
-    "num_blocks": 8,
-    "epochs": 10
+    "num_blocks": 2,
+    "epochs": 20
 }
 
 def get_config() -> dict:

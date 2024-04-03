@@ -1,12 +1,12 @@
 from torch.utils.data import Dataset
 import torch
 from datasets import load_dataset
-from transformers import PreTrainedTokenizerFast
 from config import get_config
 from utils.utils import causal_mask
+from tokenizers import Tokenizer
 
 class LanguageData(Dataset):
-    def __init__(self, data_path: str, enc_tokenizer: PreTrainedTokenizerFast, dec_tokenizer: PreTrainedTokenizerFast) -> None:
+    def __init__(self, data_path: str, enc_tokenizer: Tokenizer, dec_tokenizer: Tokenizer) -> None:
         super().__init__()
         self.data_path = data_path
         self.enc_tokenizer = enc_tokenizer
@@ -19,63 +19,46 @@ class LanguageData(Dataset):
 
     def __getitem__(self, index):
 
-        dec_bos_token = self.dec_tokenizer.bos_token_id
-        dec_eos_token = self.dec_tokenizer.eos_token_id
-        dec_pad_token = self.dec_tokenizer.pad_token_id
+        bos_token = self.dec_tokenizer.token_to_id('[SOS]')
+        eos_token = self.dec_tokenizer.token_to_id('[EOS]')
+        pad_token = self.dec_tokenizer.token_to_id('[PAD]')
 
-        enc_lang_text = self.data[index]['translation']['en']
-        dec_lang_text = self.data[index]['translation']['fr']
+        enc_lang_text = self.data[index]['en']
+        dec_lang_text = self.data[index]['fr']
 
-        enc_tokenizer_output = self.enc_tokenizer(
-            enc_lang_text,
-            max_length=self.max_seq_len,
-            truncation=True,
-            padding='max_length',
-            add_special_tokens=True,
-            return_token_type_ids=False,
-            return_tensors='pt'
-        )
+        enc_output = self.enc_tokenizer.encode(enc_lang_text).ids
+        dec_output = self.dec_tokenizer.encode(dec_lang_text).ids
 
-        dec_tokenizer_output = self.dec_tokenizer(
-            dec_lang_text,
-            max_length=self.max_seq_len-1,
-            truncation=True,
-            add_special_tokens=False,
-            return_token_type_ids=False,
-            return_tensors='pt'
-        )
+        enc_padding_tokens = (self.max_seq_len - len(enc_output)) - 2
+        dec_padding_tokens = (self.max_seq_len - len(dec_output)) - 1
 
-        dec_padding_tokens = (self.max_seq_len - len(dec_tokenizer_output['input_ids'].squeeze(0))) - 1
-
-        enc_tokens = enc_tokenizer_output['input_ids'].squeeze(0)
-        dec_tokens = torch.cat([
-            torch.tensor([dec_bos_token]),
-            dec_tokenizer_output['input_ids'].squeeze(0),
+        enc_tokens = torch.cat([
+            torch.tensor([bos_token]),
+            torch.tensor(enc_output),
+            torch.tensor([eos_token]),
+            torch.tensor([pad_token] * enc_padding_tokens)
         ])
-        if dec_padding_tokens > 0:
-            dec_tokens = torch.cat([
-                dec_tokens,
-                torch.tensor([dec_pad_token] * dec_padding_tokens, dtype=torch.int64)
-            ])
 
-        enc_mask = enc_tokenizer_output['attention_mask'].unsqueeze(1)
-        dec_mask = (dec_tokens != dec_pad_token).int()
-        dec_mask = (dec_mask & causal_mask(dec_tokens.size(0)))
+        dec_tokens = torch.cat([
+            torch.tensor([bos_token]),
+            torch.tensor(dec_output),
+            torch.tensor([pad_token] * dec_padding_tokens)
+        ])
 
         label = torch.cat([
-            dec_tokenizer_output['input_ids'].squeeze(0),
-            torch.tensor([dec_eos_token], dtype=torch.int64),
-            torch.tensor([dec_pad_token] * dec_padding_tokens, dtype=torch.int64)
+            torch.tensor(dec_output),
+            torch.tensor([eos_token]),
+            torch.tensor([pad_token] * dec_padding_tokens)
         ])
 
         return {
             'enc_lang_text': enc_lang_text,
             'enc_tokens': enc_tokens,
-            'enc_mask': enc_mask,
+            'enc_mask': (enc_tokens != pad_token).unsqueeze(0).unsqueeze(0).int(),
 
             'dec_lang_text': dec_lang_text,
             'dec_tokens': dec_tokens,
-            
-            'dec_mask': dec_mask,
+            'dec_mask': (dec_tokens != pad_token).unsqueeze(0).int() & causal_mask(dec_tokens.size(0)),
+
             'label': label,   
         }

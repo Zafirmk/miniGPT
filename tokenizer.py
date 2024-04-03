@@ -24,7 +24,7 @@ class CustomTokenizer():
     def batch_iterator(self, data_path: str, batch_size: int):
         data = load_dataset("parquet", data_files=data_path, split='train')
         for i in range(0, len(data), batch_size):
-            yield (list(map(lambda x: x[self.language], data[i : i + batch_size]['translation'])))
+            yield data[i : i + batch_size][self.language]
 
     def train(self):
         self.tokenizer.train_from_iterator(

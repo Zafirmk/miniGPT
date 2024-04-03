@@ -3,6 +3,8 @@ import torch
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
 from config import get_config
+from utils.utils import causal_mask
+
 class LanguageData(Dataset):
     def __init__(self, data_path: str, enc_tokenizer: PreTrainedTokenizerFast, dec_tokenizer: PreTrainedTokenizerFast) -> None:
         super().__init__()
@@ -14,10 +16,6 @@ class LanguageData(Dataset):
 
     def __len__(self):
         return self.data.num_rows
-    
-    def causal_mask(self, size):
-        mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
-        return mask == 0
 
     def __getitem__(self, index):
 
@@ -60,9 +58,9 @@ class LanguageData(Dataset):
                 torch.tensor([dec_pad_token] * dec_padding_tokens, dtype=torch.int64)
             ])
 
-        enc_mask = enc_tokenizer_output['attention_mask'].expand(self.max_seq_len, -1)
+        enc_mask = enc_tokenizer_output['attention_mask'].unsqueeze(1)
         dec_mask = (dec_tokens != dec_pad_token).int()
-        dec_mask = (dec_mask & self.causal_mask(dec_tokens.size(0))).squeeze(0)
+        dec_mask = (dec_mask & causal_mask(dec_tokens.size(0)))
 
         label = torch.cat([
             dec_tokenizer_output['input_ids'].squeeze(0),

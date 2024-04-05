@@ -50,5 +50,11 @@ def get_args_parser() -> argparse.ArgumentParser:
         type=int,
         help="Number of training epochs",
     )
+    parser.add_argument(
+        "--learning_rate",
+        default=0.005,
+        type=float,
+        help="Learning rate for optimizer",
+    )
 
     return parser.parse_args()

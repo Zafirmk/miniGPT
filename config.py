@@ -11,6 +11,7 @@ def get_config() -> dict:
         "d_hidden": args.d_hidden, #2048
         "num_heads": args.num_heads, #8
         "num_blocks": args.num_blocks, #8
-        "epochs": args.epochs #4
+        "epochs": args.epochs, #4
+        "learning_rate": args.learning_rate # 0.005
     }
     return config

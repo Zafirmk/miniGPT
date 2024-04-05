@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import torch.distributed
+import torch.distributed as dist
 from config import get_config
 from tokenizer import get_or_build_tokenizer
 from dataset import LanguageData
@@ -11,6 +11,7 @@ from tqdm import tqdm
 import torch
 from utils.model_utils import estimate_total_gpu_usage
 from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel
 from datasets import load_dataset
 
 def train():
@@ -36,7 +37,9 @@ def train():
         dataset=train_dataset,
         batch_size=32,
         drop_last=True,
-        num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1))
+        num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1)),
+        sampler=DistributedSampler(train_dataset),
+        shuffle=False
     )
 
     model = create_model(
@@ -50,20 +53,23 @@ def train():
         num_blocks = config['num_blocks']
     )
 
-    loss_fn = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters())
+    model.cuda()
     model.train()
+    model = DistributedDataParallel(model, device_ids=[torch.cuda.current_device()])
+
+    loss_fn = torch.nn.CrossEntropyLoss().cuda()
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
 
     for epoch in range(config['epochs']):
         for idx, batch in enumerate(train_dataloader):
 
-            enc_tokens = batch['enc_tokens']
-            dec_tokens = batch['dec_tokens']
+            enc_tokens = batch['enc_tokens'].cuda()
+            dec_tokens = batch['dec_tokens'].cuda()
 
-            enc_mask = batch['enc_mask']
-            dec_mask = batch['dec_mask']
+            enc_mask = batch['enc_mask'].cuda()
+            dec_mask = batch['dec_mask'].cuda()
 
-            label = batch['label']
+            label = batch['label'].cuda()
 
             pred = model(enc_tokens, dec_tokens, enc_mask, dec_mask)
             loss = loss_fn(pred.view(-1, config['dec_vocab_size']), label.view(-1))

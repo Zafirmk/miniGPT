@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 import torch
 from datasets import load_dataset
 from config import get_config
-from utils.utils import causal_mask
+from utils.model_utils import causal_mask
 from tokenizers import Tokenizer
 
 class LanguageData(Dataset):

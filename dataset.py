@@ -23,8 +23,8 @@ class LanguageData(Dataset):
         eos_token = self.dec_tokenizer.token_to_id('[EOS]')
         pad_token = self.dec_tokenizer.token_to_id('[PAD]')
 
-        enc_lang_text = self.data[index]['en']
-        dec_lang_text = self.data[index]['fr']
+        enc_lang_text = self.data[index]['en'][:self.max_seq_len]
+        dec_lang_text = self.data[index]['fr'][:self.max_seq_len]
 
         enc_output = self.enc_tokenizer.encode(enc_lang_text).ids
         dec_output = self.dec_tokenizer.encode(dec_lang_text).ids

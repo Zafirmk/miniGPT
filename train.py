@@ -13,16 +13,47 @@ from utils.model_utils import estimate_total_gpu_usage
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
 from datasets import load_dataset
+import socket
 
-def train():
+def find_free_port():
+    print(4)
+    s = socket.socket()
+    print(5)
+    s.bind(('', 0))  # Bind to a free port provided by the host.
+    print(6)
+    port = s.getsockname()[1]  # Get the port number
+    print(7)
+    s.close()
+    print(8)
+    print(f"PORT: {port}")
+    return port
+
+def setup(rank, world_size):
+    print(3)
+    port = find_free_port()
+    print(9)
+    init_method = f'tcp://{os.environ.get("MASTER_ADDR")}:{port}'
+    print(10)
+    print(init_method)
+    dist.init_process_group(backend='nccl', init_method=init_method, world_size=world_size, rank=rank)
+    print(11)
+
+def cleanup():
+    dist.destroy_process_group()
+
+def train(rank, world_size):
+    setup(rank, world_size)
+    print(12)
+    
     config = get_config()
-    init_stats()
+    if int(os.environ.get('SLURM_PROCID')) == 0:
+        init_stats()
 
-    enc_tokenizer = get_or_build_tokenizer('./data.parquet', 32, 'en')
-    dec_tokenizer = get_or_build_tokenizer('./data.parquet', 32, 'fr')
+    enc_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 32, 'en')
+    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 32, 'fr')
 
     data = LanguageData(
-        "./data.parquet",
+        "/home/zafirmk/scratch/miniGPT/data.parquet",
         enc_tokenizer,
         dec_tokenizer,
     )
@@ -38,7 +69,7 @@ def train():
         batch_size=32,
         drop_last=True,
         num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1)),
-        sampler=DistributedSampler(train_dataset),
+        sampler=DistributedSampler(train_dataset, num_replicas=world_size, rank=rank),
         shuffle=False
     )
 
@@ -51,25 +82,24 @@ def train():
         d_hidden = config['d_hidden'],
         num_heads = config['num_heads'],
         num_blocks = config['num_blocks']
-    )
+    ).to(rank)
 
-    model.cuda()
     model.train()
-    model = DistributedDataParallel(model, device_ids=[torch.cuda.current_device()])
+    model = DistributedDataParallel(model, device_ids=[rank])
 
-    loss_fn = torch.nn.CrossEntropyLoss().cuda()
+    loss_fn = torch.nn.CrossEntropyLoss().to(rank)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
 
     for epoch in range(config['epochs']):
         for idx, batch in enumerate(train_dataloader):
 
-            enc_tokens = batch['enc_tokens'].cuda()
-            dec_tokens = batch['dec_tokens'].cuda()
+            enc_tokens = batch['enc_tokens'].to(rank)
+            dec_tokens = batch['dec_tokens'].to(rank)
 
-            enc_mask = batch['enc_mask'].cuda()
-            dec_mask = batch['dec_mask'].cuda()
+            enc_mask = batch['enc_mask'].to(rank)
+            dec_mask = batch['dec_mask'].to(rank)
 
-            label = batch['label'].cuda()
+            label = batch['label'].to(rank)
 
             pred = model(enc_tokens, dec_tokens, enc_mask, dec_mask)
             loss = loss_fn(pred.view(-1, config['dec_vocab_size']), label.view(-1))
@@ -78,4 +108,7 @@ def train():
             optimizer.step()
             optimizer.zero_grad()
         
-        collect_stats(loss, 0, epoch)
+        print(f'Epoch {epoch+1} Completed on proc: {os.environ.get("SLURM_PROCID")}')
+        
+        if int(os.environ.get('SLURM_PROCID')) == 0:
+            collect_stats(loss, 0, epoch)

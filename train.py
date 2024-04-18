@@ -1,114 +1,84 @@
 import os
 import numpy as np
-import torch.distributed as dist
 from config import get_config
-from tokenizer import get_or_build_tokenizer
-from dataset import LanguageData
-from model import create_model, EncoderDecoderTransformer
+from model import EncoderDecoderTransformer
 from utils.log import collect_stats, init_stats
-from torch.utils.data import DataLoader, random_split
-from tqdm import tqdm
+from torch.utils.data import DataLoader
 import torch
-from utils.model_utils import estimate_total_gpu_usage
-from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
-from datasets import load_dataset
-import socket
 
-def find_free_port():
-    print(4)
-    s = socket.socket()
-    print(5)
-    s.bind(('', 0))  # Bind to a free port provided by the host.
-    print(6)
-    port = s.getsockname()[1]  # Get the port number
-    print(7)
-    s.close()
-    print(8)
-    print(f"PORT: {port}")
-    return port
+class Trainer:
+    def __init__(self,
+                 model: EncoderDecoderTransformer,
+                 optimizer: torch.optim.Adam,
+                 loss_fn: torch.nn.CrossEntropyLoss,
+                 train_dataloader: DataLoader,
+                 snapshot_pth: str = 'latest_snapshot.pt',
+                 epochs_run: int = 0
+        ) -> None:
+        self.local_rank = int(os.environ['LOCAL_RANK'])
+        self.global_rank = int(os.environ['RANK'])
+        self.model = model.to(self.local_rank)
+        self.optimizer = optimizer
+        self.loss_fn = loss_fn.to(self.local_rank)
+        self.train_dataloader = train_dataloader
+        self.snapshot_pth = snapshot_pth
+        self.epochs_run = epochs_run
+        self.config = get_config()
+        if os.path.exists(self.snapshot_pth):
+            print(f"Loading Snapshot for GPU:{self.global_rank}")
+            self.load_snapshot()
+        self.model = DistributedDataParallel(self.model, device_ids=[self.local_rank], find_unused_parameters=True)
 
-def setup(rank, world_size):
-    print(3)
-    port = find_free_port()
-    print(9)
-    init_method = f'tcp://{os.environ.get("MASTER_ADDR")}:{port}'
-    print(10)
-    print(init_method)
-    dist.init_process_group(backend='nccl', init_method=init_method, world_size=world_size, rank=rank)
-    print(11)
+    def process_batch(self, batch):
+        self.optimizer.zero_grad()
+        enc_tokens = batch['enc_tokens'].to(self.local_rank)
+        dec_tokens = batch['dec_tokens'].to(self.local_rank)
 
-def cleanup():
-    dist.destroy_process_group()
+        enc_mask = batch['enc_mask'].to(self.local_rank)
+        dec_mask = batch['dec_mask'].to(self.local_rank)
 
-def train(rank, world_size):
-    setup(rank, world_size)
-    print(12)
-    
-    config = get_config()
-    if int(os.environ.get('SLURM_PROCID')) == 0:
-        init_stats()
+        label = batch['label'].to(self.local_rank)
 
-    enc_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 32, 'en')
-    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 32, 'fr')
+        pred = self.model(enc_tokens, dec_tokens, enc_mask, dec_mask).to(self.local_rank)
+        loss = self.loss_fn(pred.view(-1, self.config['dec_vocab_size']), label.view(-1))
 
-    data = LanguageData(
-        "/home/zafirmk/scratch/miniGPT/data.parquet",
-        enc_tokenizer,
-        dec_tokenizer,
-    )
+        loss.backward()
+        self.optimizer.step()
+        return loss
 
-    total_size = len(data)
-    train_size = int(total_size * 0.99)
-    val_size = total_size - train_size
+    def process_epoch(self, epoch):
+        self.train_dataloader.sampler.set_epoch(epoch)
+        b_sz = (next(iter(self.train_dataloader)))['enc_tokens'].shape[0]
+        total_loss = 0
+        print(f"Start: [GPU:{self.global_rank}] | Epoch: {epoch} | BSize: {b_sz} | Steps: {len(self.train_dataloader)}")
+        for idx, batch in enumerate(self.train_dataloader):
+            batch_loss = self.process_batch(batch)
+            total_loss += batch_loss
+        print(f"Complete [GPU:{self.global_rank}] | Epoch: {epoch} | Loss: {total_loss / len(batch)}")
+        return total_loss / len(batch)
 
-    train_dataset, val_dataset = random_split(data, [train_size, val_size])
+    def save_snapshot(self, epoch):
+        snapshot = {
+            "MODEL_STATE": self.model.module.state_dict(),
+            "EPOCHS_RUN": epoch
+        }
 
-    train_dataloader = DataLoader(
-        dataset=train_dataset,
-        batch_size=32,
-        drop_last=True,
-        num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1)),
-        sampler=DistributedSampler(train_dataset, num_replicas=world_size, rank=rank),
-        shuffle=False
-    )
+        torch.save(snapshot, self.snapshot_pth)
+        print(f"Epoch {epoch} | Training snapshot saved at {self.snapshot_pth}")
 
-    model = create_model(
-        EncoderDecoderTransformer,
-        d_model = config['d_model'],
-        enc_vocab_size = config['enc_vocab_size'],
-        dec_vocab_size = config['dec_vocab_size'],
-        max_seq_len = config['max_seq_len'],
-        d_hidden = config['d_hidden'],
-        num_heads = config['num_heads'],
-        num_blocks = config['num_blocks']
-    ).to(rank)
+    def load_snapshot(self):
+        snapshot = torch.load(self.snapshot_pth, map_location=f"cuda:{self.local_rank}")
+        self.model.load_state_dict(snapshot["MODEL_STATE"])
+        self.epochs_run = snapshot["EPOCHS_RUN"]
+        print(f"Resuming training from snapshot at Epoch: {self.epochs_run}")
 
-    model.train()
-    model = DistributedDataParallel(model, device_ids=[rank])
-
-    loss_fn = torch.nn.CrossEntropyLoss().to(rank)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-
-    for epoch in range(config['epochs']):
-        for idx, batch in enumerate(train_dataloader):
-
-            enc_tokens = batch['enc_tokens'].to(rank)
-            dec_tokens = batch['dec_tokens'].to(rank)
-
-            enc_mask = batch['enc_mask'].to(rank)
-            dec_mask = batch['dec_mask'].to(rank)
-
-            label = batch['label'].to(rank)
-
-            pred = model(enc_tokens, dec_tokens, enc_mask, dec_mask)
-            loss = loss_fn(pred.view(-1, config['dec_vocab_size']), label.view(-1))
-
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-        
-        print(f'Epoch {epoch+1} Completed on proc: {os.environ.get("SLURM_PROCID")}')
-        
-        if int(os.environ.get('SLURM_PROCID')) == 0:
-            collect_stats(loss, 0, epoch)
+    def train(self):
+        if self.local_rank == 0:
+            init_stats()
+        for epoch in range(self.epochs_run, self.config["epochs"]):
+            epoch_loss = self.process_epoch(epoch)
+            if self.local_rank == 0:
+                collect_stats(epoch_loss, 0, epoch)
+                if epoch % 5 == 0:
+                    self.save_snapshot(epoch)

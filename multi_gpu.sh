@@ -2,12 +2,12 @@
 #SBATCH --job-name=multi_gpu
 #SBATCH --account=def-eugenium
 #SBATCH --nodes=1
-#SBATCH --tasks-per-node=2
-#SBATCH --gres=gpu:2
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-task=4
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G      
-#SBATCH --time=01:00:00
-#SBATCH --output=logs/single_gpu_%j.out
+#SBATCH --mem=16G
+#SBATCH --time=03:00:00
+#SBATCH --output=logs/multi_gpu_%j.out
 
 module purge
 module load cuda
@@ -18,9 +18,18 @@ source ~/projects/def-eugenium/zafirmk/miniGPT/testenv/bin/activate
 
 echo "Starting Training..."
 
-export TORCH_NCCL_BLOCKING_WAIT=1
-export MASTER_ADDR=$(hostname)
-echo "r$SLURM_NODEID master: $MASTER_ADDR"
-echo "r$SLURM_NODEID Launching python script"
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+nodes_array=($nodes)
+head_node=${nodes_array[0]}
+head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
 
-srun ~/projects/def-eugenium/zafirmk/miniGPT/testenv/bin/python -u main.py
+echo Head Node IP: $head_node_ip
+echo Nodes Array: $nodes_array
+export LOGLEVEL=INFO
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+srun ~/projects/def-eugenium/zafirmk/miniGPT/testenv/bin/torchrun \
+ --standalone \
+ --nproc_per_node=gpu \
+ main.py

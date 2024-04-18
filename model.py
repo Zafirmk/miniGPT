@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 
@@ -71,10 +72,10 @@ class MultiHeadAttention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
 
-        self.w_q = torch.randn((self.d_model, self.d_model), dtype=torch.float32).cuda()
-        self.w_k = torch.randn((self.d_model, self.d_model), dtype=torch.float32).cuda()
-        self.w_v = torch.randn((self.d_model, self.d_model), dtype=torch.float32).cuda()
-        self.w_o = torch.randn((self.d_model, self.d_model), dtype=torch.float32).cuda()
+        self.w_q = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
+        self.w_k = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
+        self.w_v = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
+        self.w_o = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
     
     def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)

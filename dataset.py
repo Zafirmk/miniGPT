@@ -2,8 +2,11 @@ from torch.utils.data import Dataset
 import torch
 from datasets import load_dataset
 from config import get_config
-from utils.model_utils import causal_mask
 from tokenizers import Tokenizer
+
+def causal_mask(size):
+    mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
+    return mask == 0
 
 class LanguageData(Dataset):
     def __init__(self, data_path: str, enc_tokenizer: Tokenizer, dec_tokenizer: Tokenizer) -> None:

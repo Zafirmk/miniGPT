@@ -1,14 +1,16 @@
 import torch
 from torch.distributed import init_process_group, destroy_process_group
 from train import Trainer
-from utils.model_utils import create_training_objs
+from utils.model_utils import create_training_objs, run_validation
 
 def main():
-    init_process_group('nccl')
-    model, train_dataloader, _, loss_fn, optimizer = create_training_objs()
-    trainer = Trainer(model, optimizer, loss_fn, train_dataloader)
+    # init_process_group('nccl')
+    model, train_dataloader, val_dataloader, loss_fn, optimizer = create_training_objs()
+    # run_validation(model, val_dataloader, 350)
+    print("--------------------------------------------------------------------------------------------------------")
+    trainer = Trainer(model, optimizer, loss_fn, train_dataloader, val_dataloader)
     trainer.train()
-    destroy_process_group()
+    # destroy_process_group()
 
 if __name__ == "__main__":
     main()

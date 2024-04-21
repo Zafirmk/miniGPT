@@ -57,11 +57,11 @@ class LanguageData(Dataset):
         return {
             'enc_lang_text': enc_lang_text,
             'enc_tokens': enc_tokens,
-            'enc_mask': (enc_tokens != pad_token).unsqueeze(0).unsqueeze(0).int(),
+            'enc_padding_mask': (enc_tokens == pad_token),
 
             'dec_lang_text': dec_lang_text,
             'dec_tokens': dec_tokens,
-            'dec_mask': (dec_tokens != pad_token).unsqueeze(0).int() & causal_mask(dec_tokens.size(0)),
+            'dec_padding_mask': (dec_tokens == pad_token),
 
-            'label': label,   
+            'label': label,
         }

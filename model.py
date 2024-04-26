@@ -13,7 +13,6 @@ class WordEmbeddings(nn.Module):
         )
     
     def forward(self, x) -> torch.Tensor:
-        temp = self.embedding_table(x)
         return self.embedding_table(x) * torch.sqrt(torch.tensor(self.d_model))
 
 class PositionalEmbeddings(nn.Module):
@@ -36,6 +35,7 @@ class PositionalEmbeddings(nn.Module):
     def forward(self, x) -> torch.Tensor:
         with torch.no_grad():
             return x + self.p_embed_table[:, :x.shape[1], :]
+
 class FeedForward(nn.Module):
     def __init__(self, d_model: int, d_hidden: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -58,52 +58,57 @@ class ResidualConnection(nn.Module):
         self.layer_norm = torch.nn.LayerNorm(d_model)
     
     def forward(self, x, sublayer) -> torch.Tensor:
-        f = sublayer(x)
-        return self.layer_norm(torch.add(f, x))
+        return x + sublayer(self.layer_norm(x))
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadAttention(torch.nn.Module):
     def __init__(self, d_model: int, num_heads: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
 
         self.d_k = d_model / num_heads
-        self.softmax = torch.nn.Softmax(dim=-1)
         self.d_model = d_model
         self.num_heads = num_heads
+        self.softmax = torch.nn.Softmax(dim = -1)
 
-        self.w_q = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
-        self.w_k = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
-        self.w_v = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
-        self.w_o = torch.randn((self.d_model, self.d_model), dtype=torch.float32).to(f'cuda:{(os.environ["LOCAL_RANK"])}')
+        self.w_q = torch.nn.Linear(self.d_model, self.d_model)
+        self.w_k = torch.nn.Linear(self.d_model, self.d_model)
+        self.w_v = torch.nn.Linear(self.d_model, self.d_model)
+        self.w_o = torch.nn.Linear(self.d_model, self.d_model)
     
-    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, padding_mask: torch.Tensor = None) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
-        denominator = torch.sqrt(torch.tensor(self.d_k, dtype=q.dtype))
-        # (batch, num_heads, seq_len, seq_len)
-        attention_scores = numerator / denominator
-        if mask is not None:
-            attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
-        attention_probs = self.softmax(attention_scores)
-        output = attention_probs @ v
-        return output
+        denominator = torch.sqrt(torch.tensor(self.d_k))
+        attn_logits = (numerator / denominator)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        q_ = q @ self.w_q
-        k_ = k @ self.w_k
-        v_ = v @ self.w_v
+        if padding_mask is not None:
+            attn_logits.masked_fill_(padding_mask == 0, -1e9)
 
-        # (batch, seq, d_model) ---> (batch, num_heads, seq, d_k)
-        q_ = q_.view(q_.shape[0], self.num_heads, q.shape[1], int(self.d_k)).type(dtype=torch.float32)
-        k_ = k_.view(k_.shape[0], self.num_heads, k.shape[1], int(self.d_k)).type(dtype=torch.float32)
-        v_ = v_.view(v_.shape[0], self.num_heads, v.shape[1], int(self.d_k)).type(dtype=torch.float32)
+        # Normalize attn_logits before applying softmax
+        # attn_logits_max = attn_logits.max(dim=3, keepdim=True)[0]
+        # attn_logits = attn_logits - attn_logits_max  # Broadcasting the max subtraction
 
-        attention_heads = self.attention(q_, k_, v_, mask)
+        attn_probs = self.softmax(attn_logits)
+        out = attn_probs @ v
 
-        # (batch, num_heads, seq, d_k) ---> (batch, seq, d_model)
-        h = attention_heads.view(attention_heads.shape[0], attention_heads.shape[2], attention_heads.shape[1]*attention_heads.shape[3]).type(dtype=torch.float32)
+        out = out.transpose(1, 2).contiguous().view(out.shape[0], -1, int(self.num_heads * self.d_k))
+        
+        # attn_probs = [batch, heads, seq_len, seq_len]
+        return out
 
-        return h @ self.w_o
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, padding_mask: torch.Tensor = None) -> torch.Tensor:
+        q_ = self.w_q(q)
+        k_ = self.w_k(k)
+        v_ = self.w_v(v)
+
+        q_ = q_.view((q_.shape[0], q_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
+        k_ = k_.view((k_.shape[0], k_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
+        v_ = v_.view((v_.shape[0], v_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
+
+        attn_heads = self.attention(q_, k_, v_, padding_mask)
+        out = self.w_o(attn_heads)
+
+        return out
 
 class EncoderBlock(nn.Module):
     def __init__(self, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
@@ -115,8 +120,8 @@ class EncoderBlock(nn.Module):
         self.FF = FeedForward(self.d_model, self.d_hidden)
         self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(2)]) 
     
-    def forward(self, x, mask) -> torch.Tensor:
-        x = self.RCs[0](x, lambda x: self.MHA(q=x, k=x, v=x, mask=mask))
+    def forward(self, x, enc_padding_mask) -> torch.Tensor:
+        x = self.RCs[0](x, lambda x: self.MHA(q=x, k=x, v=x, padding_mask=enc_padding_mask))
         x = self.RCs[1](x, self.FF)
         return x
 
@@ -128,11 +133,12 @@ class Encoder(nn.Module):
         self.d_hidden = d_hidden
         self.num_heads = num_heads
         self.encoders = nn.ModuleList([EncoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
+        self.Lnorm = torch.nn.LayerNorm(self.d_model)
 
     def forward(self, x, mask) -> torch.Tensor:
         for enc in self.encoders:
             x = enc(x, mask)
-        return x
+        return self.Lnorm(x)
 
 class DecoderBlock(nn.Module):
     def __init__(self, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
@@ -145,9 +151,9 @@ class DecoderBlock(nn.Module):
         self.FF = FeedForward(self.d_model, self.d_hidden)
         self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(3)])
     
-    def forward(self, x, enc_k, enc_v, enc_mask, dec_mask) -> torch.Tensor:
-        x = self.RCs[0](x, lambda x: self.MMHA(q=x, k=x, v=x, mask=dec_mask))
-        x = self.RCs[1](x, lambda x: self.MHA(q=x, k=enc_k, v=enc_v, mask=enc_mask))
+    def forward(self, x, enc_k, enc_v, enc_padding_mask, dec_padding_mask) -> torch.Tensor:
+        x = self.RCs[0](x, lambda x: self.MMHA(q=x, k=x, v=x, padding_mask=dec_padding_mask))
+        x = self.RCs[1](x, lambda x: self.MHA(q=x, k=enc_k, v=enc_v, padding_mask=enc_padding_mask))
         x = self.RCs[2](x, self.FF)
         return x
 
@@ -159,11 +165,12 @@ class Decoder(nn.Module):
         self.d_hidden = d_hidden
         self.num_heads = num_heads
         self.decoders = nn.ModuleList([DecoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
+        self.Lnorm = torch.nn.LayerNorm(self.d_model)
     
-    def forward(self, x, enc_k, enc_v, enc_mask, dec_mask) -> torch.Tensor:
+    def forward(self, x, enc_k, enc_v, enc_padding_mask, dec_padding_mask) -> torch.Tensor:
         for dec in self.decoders:
-            x = dec(x, enc_k, enc_v, enc_mask, dec_mask)
-        return x
+            x = dec(x, enc_k, enc_v, enc_padding_mask, dec_padding_mask)
+        return self.Lnorm(x)
 
 class ProjectionLayer(nn.Module):
     def __init__(self, d_model: int, vocab_size: int, *args, **kwargs) -> None:
@@ -191,25 +198,29 @@ class EncoderDecoderTransformer(nn.Module):
         x = self.encoder(x, mask)
         return x
 
-    def decode(self, x: torch.Tensor, enc_k: torch.Tensor, enc_v: torch.Tensor, enc_mask: torch.Tensor, dec_mask: torch.Tensor) -> torch.Tensor:
+    def decode(self, x: torch.Tensor, enc_k: torch.Tensor, enc_v: torch.Tensor, enc_padding_mask: torch.Tensor, dec_padding_mask: torch.Tensor) -> torch.Tensor:
         x = self.dec_vocab(x)
         x = self.positional_enc(x)
-        x = self.decoder(x, enc_k, enc_v, enc_mask, dec_mask)
+        x = self.decoder(x, enc_k, enc_v, enc_padding_mask, dec_padding_mask)
         return x
 
     def project(self, x: torch.Tensor) -> torch.Tensor:
         x = self.projection(x)
         return x
     
-    def forward(self, enc_input: torch.Tensor, dec_input: torch.Tensor, enc_mask: torch.Tensor, dec_mask: torch.Tensor) -> torch.Tensor:
-        enc_output = self.encode(enc_input, enc_mask)
-        dec_output = self.decode(dec_input, enc_output, enc_output, enc_mask, dec_mask)
+    def forward(self, enc_input: torch.Tensor, dec_input: torch.Tensor, enc_padding_mask: torch.Tensor, dec_padding_mask: torch.Tensor) -> torch.Tensor:
+        enc_output = self.encode(enc_input, enc_padding_mask)
+        dec_output = self.decode(dec_input, enc_output, enc_output, enc_padding_mask, dec_padding_mask)
         return self.project(dec_output)
 
 
 def create_model(model_type: EncoderDecoderTransformer, **kwargs) -> EncoderDecoderTransformer:
     model = model_type(**kwargs)
+    flag = False
     for p in model.parameters():
+        flag = True
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
+    if flag:
+        print("Model weights initialized with Xavier Uniform")
     return model

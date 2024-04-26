@@ -46,7 +46,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--epochs",
-        default=10,
+        default=500,
         type=int,
         help="Number of training epochs",
     )
@@ -55,6 +55,12 @@ def get_args_parser() -> argparse.ArgumentParser:
         default=0.005,
         type=float,
         help="Learning rate for optimizer",
+    )
+    parser.add_argument(
+        "--batch_size",
+        default=32,
+        type=int,
+        help="Training batch size"
     )
 
     return parser.parse_args()

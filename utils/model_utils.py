@@ -1,19 +1,16 @@
-import wandb
 import os
+from tqdm import tqdm
 import torch
 import numpy as np
 import torch.utils
 from config import get_config
 from tokenizer import get_or_build_tokenizer
-from dataset import LanguageData
+from dataset import LanguageData, causal_mask
 from model import create_model, EncoderDecoderTransformer
 from torch.utils.data import DataLoader, random_split
 import torch
+from torchmetrics.text import CharErrorRate
 from torch.utils.data.distributed import DistributedSampler
-
-def causal_mask(size):
-    mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
-    return mask == 0
 
 def estimate_total_gpu_usage(model, data_dict, in_bytes=False):
     model_size = 0
@@ -33,11 +30,10 @@ def estimate_total_gpu_usage(model, data_dict, in_bytes=False):
         return total_size / (1024 ** 2)
 
 def create_training_objs():
-
     config = get_config()
 
-    enc_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 32, 'en')
-    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 32, 'fr')
+    enc_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'en')
+    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
 
     data = LanguageData(
         "/home/zafirmk/scratch/miniGPT/data.parquet",
@@ -49,12 +45,15 @@ def create_training_objs():
     train_size = int(total_size * 0.99)
     val_size = total_size - train_size
 
+    print(f"[GPU:{int(os.environ['RANK'])}] | Train dataset size: {train_size}")
+    print(f"[GPU:{int(os.environ['RANK'])}] | Val dataset size: {val_size}")
+
     train_dataset, val_dataset = random_split(data, [train_size, val_size])
 
     train_dataloader = DataLoader(
         dataset=train_dataset,
-        batch_size=96,
-        drop_last=True,
+        batch_size=config['batch_size'],
+        drop_last=False,
         shuffle=False,
         sampler=DistributedSampler(train_dataset),
         num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1))
@@ -62,18 +61,18 @@ def create_training_objs():
 
     val_dataloader = DataLoader(
         dataset=val_dataset,
-        batch_size=128,
-        drop_last=True,
+        batch_size=1,
+        drop_last=False,
         shuffle=False,
-        sampler=DistributedSampler(val_dataset),
+        sampler= DistributedSampler(val_dataset),
         num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1))
     )
 
     model = create_model(
         EncoderDecoderTransformer,
         d_model = config['d_model'],
-        enc_vocab_size = config['enc_vocab_size'],
-        dec_vocab_size = config['dec_vocab_size'],
+        enc_vocab_size = enc_tokenizer.get_vocab_size(),
+        dec_vocab_size = dec_tokenizer.get_vocab_size(),
         max_seq_len = config['max_seq_len'],
         d_hidden = config['d_hidden'],
         num_heads = config['num_heads'],
@@ -81,34 +80,41 @@ def create_training_objs():
     )
 
     model.train()
-    loss_fn = torch.nn.CrossEntropyLoss()
+    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=enc_tokenizer.token_to_id('[PAD]'), label_smoothing=0.1)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
 
-    return model, train_dataloader, val_dataloader, loss_fn, optimizer
+    return model, train_dataloader, val_dataloader, loss_fn, optimizer, dec_tokenizer
 
-def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
-    sos_idx = tokenizer_tgt.token_to_id('[SOS]')
-    eos_idx = tokenizer_tgt.token_to_id('[EOS]')
+def validate_batch(model, batch, device):
+
+    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
+    sos_idx = dec_tokenizer.token_to_id('[SOS]')
+    eos_idx = dec_tokenizer.token_to_id('[EOS]')
+
+    enc_tokens = batch['enc_tokens'].to(device)
+    enc_mask = batch['enc_padding_mask'].to(device)
+
+    max_len = get_config()['max_seq_len']
 
     # Precompute the encoder output and reuse it for every step
-    encoder_output = model.encode(source, source_mask)
+    encoder_output = model.module.encode(enc_tokens, enc_mask).to(device)
     # Initialize the decoder input with the sos token
-    decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device)
+    decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(enc_tokens).to(device)
     while True:
         if decoder_input.size(1) == max_len:
             break
 
         # build mask for target
-        decoder_mask = causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
+        decoder_mask = causal_mask(decoder_input.size(1)).type_as(enc_mask).to(device)
 
         # calculate output
-        out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
+        out = model.module.decode(decoder_input, encoder_output, encoder_output, enc_mask, decoder_mask).to(device)
 
         # get next token
-        prob = model.project(out[:, -1])
+        prob = model.module.project(out[:, -1]).to(device)
         _, next_word = torch.max(prob, dim=1)
         decoder_input = torch.cat(
-            [decoder_input, torch.empty(1, 1).type_as(source).fill_(next_word.item()).to(device)], dim=1
+            [decoder_input, torch.empty(1, 1).type_as(enc_tokens).fill_(next_word.item()).to(device)], dim=1
         )
 
         if next_word == eos_idx:
@@ -116,70 +122,36 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
 
     return decoder_input.squeeze(0)
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, epoch, num_examples=2):
+def validation(model: EncoderDecoderTransformer, val_dataloader: DataLoader, num_examples=1):
     model.eval()
+    try:
+        with os.popen('stty size', 'r') as console:
+            _, console_width = console.read().split()
+            console_width = int(console_width)
+    except:
+        console_width = 80
+
+    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
+    cer = CharErrorRate()
+    total = 0
     count = 0
 
-    source_texts = []
-    expected = []
-    predicted = []
+    for batch in val_dataloader:
+        x = validate_batch(model, batch, int(os.environ['LOCAL_RANK'])).detach().cpu().numpy()
 
-    with torch.no_grad():
-        for batch in validation_ds:
-            count += 1
-            encoder_input = batch["enc_tokens"].to(device) # (b, seq_len)
-            encoder_mask = batch["dec_tokens"].to(device) # (b, 1, 1, seq_len)
+        pred_sentence = dec_tokenizer.decode(x)
 
-            # check that the batch size is 1
-            assert encoder_input.size(
-                0) == 1, "Batch size must be 1 for validation"
+        total += cer(pred_sentence, batch["dec_lang_text"][0])
+        count += 1
 
-            model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+        if count < num_examples:
+            print('-'*console_width)
+            print(f"[GPU:{int(os.environ['RANK'])}] | {f'SOURCE: ':>12}{batch['enc_lang_text'][0]}")
+            print(f"[GPU:{int(os.environ['RANK'])}] | {f'TARGET: ':>12}{batch['dec_lang_text'][0]}")
+            print(f"[GPU:{int(os.environ['RANK'])}] | {f'PREDICTED: ':>12}{pred_sentence}")
+            print('-'*console_width)
 
-            source_text = batch["enc_lang_text"]
-            target_text = batch["dec_lang_text"]
-            model_out_text = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+        if count % 10 == 0:
+            print(f"[GPU:{int(os.environ['RANK'])}] | Processed {count+1} validation examples")
 
-            source_texts.append(source_text)
-            expected.append(target_text)
-            predicted.append(model_out_text)
-            
-            # Print the source, target and model output
-            print_msg(f"{f'SOURCE: ':>12}{source_text}")
-            print_msg(f"{f'TARGET: ':>12}{target_text}")
-            print_msg(f"{f'PREDICTED: ':>12}{model_out_text}")
-    
-            # Evaluate the character error rate
-            # Compute the char error rate 
-            metric = torchmetrics.CharErrorRate()
-            cer = metric(predicted, expected)
-            wandb.log(
-            {
-                f"Character error rate": cer,
-            },
-                step=epoch
-            )
-
-
-            # Compute the word error rate
-            metric = torchmetrics.WordErrorRate()
-            wer = metric(predicted, expected)
-            wandb.log(
-            {
-                f"Character error rate": wer,
-            },
-                step=epoch
-            )
-
-            # Compute the BLEU metric
-            metric = torchmetrics.BLEUScore()
-            bleu = metric(predicted, expected)
-            wandb.log(
-            {
-                f"Character error rate": bleu,
-            },
-                step=epoch
-            )
-
-            if count == num_examples:
-                break
+    return (total / count)

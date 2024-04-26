@@ -5,12 +5,12 @@ from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
 
-def get_all_sentences(data_path: str, batch_size: int, language: str):
+def get_all_sentences(data_path: str, language: str):
     data = load_dataset("parquet", data_files=data_path, split='train')
-    for i in range(0, len(data), batch_size):
-        yield data[i : i + batch_size][language]
+    for item in data:
+        yield item[language]
 
-def get_or_build_tokenizer(dpath, tokenizer_batch_size, lang):
+def get_or_build_tokenizer(dpath, lang):
     tokenizer_path = Path(f'./tokenizers/tokenizer-{lang}.json')
     
     # Check if the directory exists, if not create it
@@ -24,7 +24,7 @@ def get_or_build_tokenizer(dpath, tokenizer_batch_size, lang):
         tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
         tokenizer.pre_tokenizer = Whitespace()
         trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=2)
-        tokenizer.train_from_iterator(get_all_sentences(dpath, tokenizer_batch_size, lang), trainer=trainer)
+        tokenizer.train_from_iterator(get_all_sentences(dpath, lang), trainer=trainer)
         
         # Save the tokenizer
         tokenizer.save(str(tokenizer_path))

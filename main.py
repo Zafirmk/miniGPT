@@ -5,8 +5,8 @@ from utils.model_utils import create_training_objs
 
 def main():
     init_process_group('nccl')
-    model, train_dataloader, _, loss_fn, optimizer = create_training_objs()
-    trainer = Trainer(model, optimizer, loss_fn, train_dataloader)
+    model, train_dataloader, val_dataloader, loss_fn, optimizer, dec_tokenizer = create_training_objs()
+    trainer = Trainer(model, optimizer, loss_fn, train_dataloader, val_dataloader, dec_tokenizer)
     trainer.train()
     destroy_process_group()
 

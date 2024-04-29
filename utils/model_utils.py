@@ -9,7 +9,7 @@ from dataset import LanguageData, causal_mask
 from model import create_model, EncoderDecoderTransformer
 from torch.utils.data import DataLoader, random_split
 import torch
-from torchmetrics.text import CharErrorRate
+from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from torch.utils.data.distributed import DistributedSampler
 
 def estimate_total_gpu_usage(model, data_dict, in_bytes=False):
@@ -124,34 +124,34 @@ def validate_batch(model, batch, device):
 
 def validation(model: EncoderDecoderTransformer, val_dataloader: DataLoader, num_examples=1):
     model.eval()
-    try:
-        with os.popen('stty size', 'r') as console:
-            _, console_width = console.read().split()
-            console_width = int(console_width)
-    except:
-        console_width = 80
 
     dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
     cer = CharErrorRate()
-    total = 0
+    wer = WordErrorRate()
+    bleu = BLEUScore()
+
+    total_cer = 0
+    total_wer = 0
+    total_bleu = 0
     count = 0
 
-    for batch in val_dataloader:
-        x = validate_batch(model, batch, int(os.environ['LOCAL_RANK'])).detach().cpu().numpy()
+    with torch.no_grad():
+        for batch in val_dataloader:
+            x = validate_batch(model, batch, int(os.environ['LOCAL_RANK'])).detach().cpu().numpy()
 
-        pred_sentence = dec_tokenizer.decode(x)
+            pred_sentence = dec_tokenizer.decode(x)
 
-        total += cer(pred_sentence, batch["dec_lang_text"][0])
-        count += 1
+            total_cer += cer(pred_sentence, batch["dec_lang_text"][0])
+            total_wer += wer(pred_sentence, batch["dec_lang_text"][0])
+            total_bleu += bleu(pred_sentence, batch["dec_lang_text"][0])
 
-        if count < num_examples:
-            print('-'*console_width)
-            print(f"[GPU:{int(os.environ['RANK'])}] | {f'SOURCE: ':>12}{batch['enc_lang_text'][0]}")
-            print(f"[GPU:{int(os.environ['RANK'])}] | {f'TARGET: ':>12}{batch['dec_lang_text'][0]}")
-            print(f"[GPU:{int(os.environ['RANK'])}] | {f'PREDICTED: ':>12}{pred_sentence}")
-            print('-'*console_width)
+            if count < num_examples and int(os.environ['RANK']) == 0:
+                print('\n')
+                print(f"[GPU:{int(os.environ['RANK'])}] | {f'SOURCE: ':>12}{batch['enc_lang_text'][0]}")
+                print(f"[GPU:{int(os.environ['RANK'])}] | {f'TARGET: ':>12}{batch['dec_lang_text'][0]}")
+                print(f"[GPU:{int(os.environ['RANK'])}] | {f'PREDICTED: ':>12}{pred_sentence}")
+                print('\n')
+            
+            count += 1
 
-        if count % 10 == 0:
-            print(f"[GPU:{int(os.environ['RANK'])}] | Processed {count+1} validation examples")
-
-    return (total / count)
+    return ((total_cer / count), (total_wer / count), (total_bleu / count))

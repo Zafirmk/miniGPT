@@ -2,11 +2,13 @@ import os
 import wandb
 from utils.args import get_args_parser
 
-def collect_stats(train_loss, val_loss, epoch):
+def collect_stats(train_loss, cer_loss, wer_loss, bleu_loss, epoch):
     wandb.log(
         {
-            f"Training Loss": train_loss,
-            f"Validation Loss": val_loss,
+            f"train/Training Loss": train_loss,
+            f"validation/CER Loss": cer_loss,
+            f"validation/WER Loss": wer_loss,
+            f"validation/BLEU Loss": bleu_loss,
         },
         step=epoch
     )

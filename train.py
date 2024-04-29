@@ -36,6 +36,7 @@ class Trainer:
             print(f"\nLoading Snapshot for GPU:{self.global_rank}")
             self.load_snapshot()
         self.model = DistributedDataParallel(self.model, device_ids=[self.local_rank], find_unused_parameters=True)
+        print(f"[GPU:{self.global_rank}] | [Local Rank: {self.local_rank}] | Initialized Trainer")
 
     def process_batch(self, batch):
         enc_tokens = batch['enc_tokens'].to(self.local_rank)
@@ -59,10 +60,14 @@ class Trainer:
         b_sz = (next(iter(self.train_dataloader)))['enc_tokens'].shape[0]
         total_loss = 0
         print(f"Start: [GPU:{self.global_rank}] | Epoch: {epoch} | BSize: {b_sz} | Steps: {len(self.train_dataloader)}")
-        batch_iter = (tqdm(self.train_dataloader, desc=f"Processing Epoch {epoch:02d}"))
+        if self.global_rank == 0:
+            batch_iter = (tqdm(self.train_dataloader, desc=f"Processing Epoch {epoch:02d}"))
+        else:
+            batch_iter = self.train_dataloader
         for idx, batch in enumerate(batch_iter):
             batch_loss = self.process_batch(batch)
-            batch_iter.set_postfix({"loss": f"{batch_loss.item():6.3f}"})
+            if self.global_rank == 0:
+                batch_iter.set_postfix({"loss": f"{batch_loss.item():6.3f}"})
             total_loss += batch_loss
         print(f"Complete [GPU:{self.global_rank}] | Epoch: {epoch} | Loss: {total_loss / len(self.train_dataloader)}")
         return total_loss / len(self.train_dataloader)
@@ -83,12 +88,15 @@ class Trainer:
         print(f"[GPU:{self.global_rank}] | Resuming training from snapshot at Epoch: {self.epochs_run}")
 
     def train(self):
-        if self.local_rank == 0:
+        epoch = 0
+        if self.global_rank == 0:
             init_stats()
-        for epoch in range(self.epochs_run, self.config["epochs"]):
+        # for epoch in range(self.epochs_run, self.config["epochs"]):
+        while True:
             train_loss = self.process_epoch(epoch)
-            val_loss = validation(self.model, self.val_dataloader)
-            if self.local_rank == 0:
-                collect_stats(train_loss, val_loss, epoch)
-                if epoch % 250 == 0:
-                    self.save_snapshot(epoch)
+            cer_loss, wer_loss, bleu_loss = validation(self.model, self.val_dataloader)
+            if self.global_rank == 0:
+                collect_stats(train_loss, cer_loss, wer_loss, bleu_loss, epoch)
+                self.save_snapshot(epoch)
+            print(f"[GPU: {self.global_rank}] | COMPLETED EPOCH {epoch}")
+            epoch += 1

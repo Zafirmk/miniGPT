@@ -2,6 +2,7 @@ import torch
 from torch.distributed import init_process_group, destroy_process_group
 from train import Trainer
 from utils.model_utils import create_training_objs
+import warnings
 
 def main():
     init_process_group('nccl')
@@ -11,4 +12,5 @@ def main():
     destroy_process_group()
 
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore")
     main()

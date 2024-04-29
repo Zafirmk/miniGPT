@@ -9,18 +9,6 @@ def get_args_parser() -> argparse.ArgumentParser:
         help="Dimensionality of embeddings in transformer architecture",
     )
     parser.add_argument(
-        "--enc_vocab_size",
-        default=30000,
-        type=int,
-        help="Vocabulary size for encoder vocab",
-    )
-    parser.add_argument(
-        "--dec_vocab_size",
-        default=30000,
-        type=int,
-        help="Vocabulary size for decoder vocab",
-    )
-    parser.add_argument(
         "--max_seq_len",
         default=350,
         type=int,
@@ -46,7 +34,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--epochs",
-        default=500,
+        default=100,
         type=int,
         help="Number of training epochs",
     )

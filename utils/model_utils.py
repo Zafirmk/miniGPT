@@ -11,60 +11,50 @@ from torch.utils.data import DataLoader, random_split
 import torch
 from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from torch.utils.data.distributed import DistributedSampler
-
-def estimate_total_gpu_usage(model, data_dict, in_bytes=False):
-    model_size = 0
-    for param in model.parameters():
-        model_size += np.prod(param.size()) * param.element_size()
-    for buffer in model.buffers():
-        model_size += np.prod(buffer.size()) * buffer.element_size()
-    
-    input_keys = ['enc_tokens', 'dec_tokens', 'enc_mask', 'dec_mask']
-    input_size = sum(np.prod(data_dict[key].size()) * data_dict[key].element_size() for key in input_keys if key in data_dict)
-    
-    total_size = model_size + input_size
-    
-    if in_bytes:
-        return total_size
-    else:
-        return total_size / (1024 ** 2)
+from datasets import load_dataset
 
 def create_training_objs():
     config = get_config()
+    data_raw = load_dataset("parquet", data_files = config['data_path'], split='train')
 
-    enc_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'en')
-    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
+    enc_tokenizer = get_or_build_tokenizer(data_raw, 'en')
+    dec_tokenizer = get_or_build_tokenizer(data_raw, 'fr')
 
-    data = LanguageData(
-        "/home/zafirmk/scratch/miniGPT/data.parquet",
+    total_size = len(data_raw)
+    train_size = int(total_size * 0.9)
+    val_size = total_size - train_size
+    train_dataset_raw, val_dataset_raw = random_split(data_raw, [train_size, val_size])
+
+    train_ds = LanguageData(
+        train_dataset_raw,
         enc_tokenizer,
         dec_tokenizer,
     )
 
-    total_size = len(data)
-    train_size = int(total_size * 0.99)
-    val_size = total_size - train_size
+    val_ds = LanguageData(
+        val_dataset_raw,
+        enc_tokenizer,
+        dec_tokenizer
+    )
 
     print(f"[GPU:{int(os.environ['RANK'])}] | Train dataset size: {train_size}")
     print(f"[GPU:{int(os.environ['RANK'])}] | Val dataset size: {val_size}")
 
-    train_dataset, val_dataset = random_split(data, [train_size, val_size])
-
     train_dataloader = DataLoader(
-        dataset=train_dataset,
+        dataset=train_ds,
         batch_size=config['batch_size'],
         drop_last=False,
         shuffle=False,
-        sampler=DistributedSampler(train_dataset),
+        sampler=DistributedSampler(train_ds),
         num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1))
     )
 
     val_dataloader = DataLoader(
-        dataset=val_dataset,
+        dataset=val_ds,
         batch_size=1,
         drop_last=False,
         shuffle=False,
-        sampler= DistributedSampler(val_dataset),
+        sampler= DistributedSampler(val_ds),
         num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 1))
     )
 
@@ -76,18 +66,19 @@ def create_training_objs():
         max_seq_len = config['max_seq_len'],
         d_hidden = config['d_hidden'],
         num_heads = config['num_heads'],
-        num_blocks = config['num_blocks']
+        num_blocks = config['num_blocks'],
+        dropout = config['dropout']
     )
 
     model.train()
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=enc_tokenizer.token_to_id('[PAD]'), label_smoothing=0.1)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'], eps=1e-9)
 
     return model, train_dataloader, val_dataloader, loss_fn, optimizer, dec_tokenizer
 
 def validate_batch(model, batch, device):
 
-    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
+    dec_tokenizer = get_or_build_tokenizer(None, 'fr')
     sos_idx = dec_tokenizer.token_to_id('[SOS]')
     eos_idx = dec_tokenizer.token_to_id('[EOS]')
 
@@ -125,7 +116,7 @@ def validate_batch(model, batch, device):
 def validation(model: EncoderDecoderTransformer, val_dataloader: DataLoader, num_examples=1):
     model.eval()
 
-    dec_tokenizer = get_or_build_tokenizer('/home/zafirmk/scratch/miniGPT/data.parquet', 'fr')
+    dec_tokenizer = get_or_build_tokenizer(None, 'fr')
     cer = CharErrorRate()
     wer = WordErrorRate()
     bleu = BLEUScore()

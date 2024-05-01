@@ -18,7 +18,7 @@ class Trainer:
                  train_dataloader: DataLoader,
                  val_dataloader: DataLoader,
                  dec_tokenizer: Tokenizer,
-                 snapshot_pth: str = 'snapshots/latest_snapshot.pt',
+                 snapshot_pth: str = 'snapshots/latest_snapshot_new.pt',
                  epochs_run: int = 0
         ) -> None:
         self.local_rank = int(os.environ['LOCAL_RANK'])
@@ -32,9 +32,12 @@ class Trainer:
         self.snapshot_pth = snapshot_pth
         self.epochs_run = epochs_run
         self.config = get_config()
-        if os.path.exists(self.snapshot_pth):
-            print(f"\nLoading Snapshot for GPU:{self.global_rank}")
-            self.load_snapshot()
+        if self.config['model_path']:
+            try:
+                print(f"\nLoading Snapshot for GPU:{self.global_rank}")
+                self.load_snapshot()
+            except:
+                print(f"Unable to preload model for GPU:{self.global_rank}")
         self.model = DistributedDataParallel(self.model, device_ids=[self.local_rank], find_unused_parameters=True)
         print(f"[GPU:{self.global_rank}] | [Local Rank: {self.local_rank}] | Initialized Trainer")
 
@@ -88,15 +91,13 @@ class Trainer:
         print(f"[GPU:{self.global_rank}] | Resuming training from snapshot at Epoch: {self.epochs_run}")
 
     def train(self):
-        epoch = 0
         if self.global_rank == 0:
             init_stats()
-        # for epoch in range(self.epochs_run, self.config["epochs"]):
-        while True:
+        for epoch in range(self.epochs_run, self.config["epochs"]):
+            torch.cuda.empty_cache()
             train_loss = self.process_epoch(epoch)
             cer_loss, wer_loss, bleu_loss = validation(self.model, self.val_dataloader)
             if self.global_rank == 0:
                 collect_stats(train_loss, cer_loss, wer_loss, bleu_loss, epoch)
                 self.save_snapshot(epoch)
             print(f"[GPU: {self.global_rank}] | COMPLETED EPOCH {epoch}")
-            epoch += 1

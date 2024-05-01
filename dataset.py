@@ -5,16 +5,15 @@ from config import get_config
 from tokenizers import Tokenizer
 
 class LanguageData(Dataset):
-    def __init__(self, data_path: str, enc_tokenizer: Tokenizer, dec_tokenizer: Tokenizer) -> None:
+    def __init__(self, ds, enc_tokenizer: Tokenizer, dec_tokenizer: Tokenizer) -> None:
         super().__init__()
-        self.data_path = data_path
+        self.data = ds
         self.enc_tokenizer = enc_tokenizer
         self.dec_tokenizer = dec_tokenizer
-        self.data = load_dataset("parquet", data_files = self.data_path, split='train')
         self.max_seq_len = get_config()['max_seq_len']
 
     def __len__(self):
-        return self.data.num_rows
+        return len(self.data)
 
     def __getitem__(self, index):
 

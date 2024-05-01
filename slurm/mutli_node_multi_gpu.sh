@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=multi_gpu
+#SBATCH --job-name=multi_node_multi_gpu
 #SBATCH --account=def-eugenium
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
-#SBATCH --time=24:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=logs/multi_gpu_%j.out
 
 module purge
@@ -28,13 +28,6 @@ echo Nodes Array: $nodes_array
 export LOGLEVEL=INFO
 export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
-
-# Single Node | Multi GPU
-# srun ~/projects/def-eugenium/zafirmk/miniGPT/testenv/bin/torchrun \
-#  --standalone \
-#  --nproc_per_node=gpu \
-#  main.py
-
 
 # Multi Node | Multi GPU
 srun ~/projects/def-eugenium/zafirmk/miniGPT/testenv/bin/torchrun \

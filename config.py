@@ -11,6 +11,9 @@ def get_config() -> dict:
         "num_blocks": args.num_blocks,
         "epochs": args.epochs,
         "learning_rate": args.learning_rate,
-        "batch_size": args.batch_size
+        "batch_size": args.batch_size,
+        "dropout": args.dropout,
+        "model_path": args.model_path,
+        "data_path": "/home/zafirmk/scratch/miniGPT/data.parquet"
     }
     return config

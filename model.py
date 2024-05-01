@@ -1,4 +1,4 @@
-import os
+import math
 import torch
 import torch.nn as nn
 
@@ -13,13 +13,14 @@ class WordEmbeddings(nn.Module):
         )
     
     def forward(self, x) -> torch.Tensor:
-        return self.embedding_table(x) * torch.sqrt(torch.tensor(self.d_model))
+        return self.embedding_table(x) * math.sqrt(self.d_model)
 
 class PositionalEmbeddings(nn.Module):
-    def __init__(self, d_model: int, max_seq_len: int, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, max_seq_len: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.d_model = d_model
         self.max_seq_len = max_seq_len
+        self.dropout = nn.Dropout(dropout)
 
         p_embed_table = torch.zeros((self.max_seq_len, self.d_model))
         position = torch.arange(0, max_seq_len).unsqueeze(1) # (seq_len, 1)
@@ -34,14 +35,15 @@ class PositionalEmbeddings(nn.Module):
     
     def forward(self, x) -> torch.Tensor:
         with torch.no_grad():
-            return x + self.p_embed_table[:, :x.shape[1], :]
+            return self.dropout(x + self.p_embed_table[:, :x.shape[1], :])
 
 class FeedForward(nn.Module):
-    def __init__(self, d_model: int, d_hidden: int, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, d_hidden: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.relu = torch.nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
         self.linear1 = torch.nn.Linear(d_model, d_hidden)
         self.linear2 = torch.nn.Linear(d_hidden, d_model)
     
@@ -49,50 +51,64 @@ class FeedForward(nn.Module):
     def forward(self, x) -> torch.Tensor:
         x = self.linear1(x)
         x = self.relu(x)
+        x = self.dropout(x)
         x = self.linear2(x)
         return x
 
-class ResidualConnection(nn.Module):
-    def __init__(self, d_model: int, *args, **kwargs) -> None:
+class LayerNormalization(nn.Module):
+    def __init__(self, in_features: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.layer_norm = torch.nn.LayerNorm(d_model)
+        self.eps = 10**-6
+        self.a = nn.Parameter(torch.ones(in_features))
+        self.b = nn.Parameter(torch.zeros(in_features))
+
+    def forward(self, x):
+        mean = x.mean(dim = -1, keepdim = True)
+        std = x.std(dim = -1, keepdim = True)
+        return self.a * (x - mean) / (std + self.eps) + self.b
+
+class ResidualConnection(nn.Module):
+    def __init__(self, d_model: int, dropout: float, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = LayerNormalization(d_model)
     
     def forward(self, x, sublayer) -> torch.Tensor:
-        return x + sublayer(self.layer_norm(x))
+        return x + self.dropout(sublayer(self.layer_norm(x)))
 
 class MultiHeadAttention(torch.nn.Module):
-    def __init__(self, d_model: int, num_heads: int, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, num_heads: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
 
-        self.d_k = d_model / num_heads
+        self.d_k = d_model // num_heads
         self.d_model = d_model
         self.num_heads = num_heads
         self.softmax = torch.nn.Softmax(dim = -1)
+        self.dropout = nn.Dropout(dropout)
 
-        self.w_q = torch.nn.Linear(self.d_model, self.d_model)
-        self.w_k = torch.nn.Linear(self.d_model, self.d_model)
-        self.w_v = torch.nn.Linear(self.d_model, self.d_model)
-        self.w_o = torch.nn.Linear(self.d_model, self.d_model)
+        self.w_q = torch.nn.Linear(self.d_model, self.d_model, bias=False)
+        self.w_k = torch.nn.Linear(self.d_model, self.d_model, bias=False)
+        self.w_v = torch.nn.Linear(self.d_model, self.d_model, bias=False)
+        self.w_o = torch.nn.Linear(self.d_model, self.d_model, bias=False)
     
-    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, padding_mask: torch.Tensor = None) -> torch.Tensor:
+    @staticmethod
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dropout: float, padding_mask: torch.Tensor = None) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
-        denominator = torch.sqrt(torch.tensor(self.d_k))
+        denominator = math.sqrt(self.d_k)
         attn_logits = (numerator / denominator)
 
         if padding_mask is not None:
             attn_logits.masked_fill_(padding_mask == 0, -1e9)
 
-        # Normalize attn_logits before applying softmax
-        # attn_logits_max = attn_logits.max(dim=3, keepdim=True)[0]
-        # attn_logits = attn_logits - attn_logits_max  # Broadcasting the max subtraction
-
         attn_probs = self.softmax(attn_logits)
+        
+        if dropout is not None:
+            attn_probs = dropout(attn_probs)
+
         out = attn_probs @ v
 
-        out = out.transpose(1, 2).contiguous().view(out.shape[0], -1, int(self.num_heads * self.d_k))
-        
         # attn_probs = [batch, heads, seq_len, seq_len]
         return out
 
@@ -105,20 +121,22 @@ class MultiHeadAttention(torch.nn.Module):
         k_ = k_.view((k_.shape[0], k_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
         v_ = v_.view((v_.shape[0], v_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
 
-        attn_heads = self.attention(q_, k_, v_, padding_mask)
+        attn_heads = MultiHeadAttention.attention(q_, k_, v_, padding_mask, self.dropout)
+        attn_heads = attn_heads.transpose(1, 2).contiguous().view(attn_heads.shape[0], -1, int(self.num_heads * self.d_k))
+
         out = self.w_o(attn_heads)
 
         return out
 
 class EncoderBlock(nn.Module):
-    def __init__(self, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, d_hidden: int, num_heads: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_heads = num_heads
-        self.MHA = MultiHeadAttention(self.d_model, self.num_heads)
-        self.FF = FeedForward(self.d_model, self.d_hidden)
-        self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(2)]) 
+        self.MHA = MultiHeadAttention(self.d_model, self.num_heads, dropout)
+        self.FF = FeedForward(self.d_model, self.d_hidden, dropout)
+        self.RCs = nn.ModuleList([ResidualConnection(self.d_model, dropout) for _ in range(2)]) 
     
     def forward(self, x, enc_padding_mask) -> torch.Tensor:
         x = self.RCs[0](x, lambda x: self.MHA(q=x, k=x, v=x, padding_mask=enc_padding_mask))
@@ -126,14 +144,14 @@ class EncoderBlock(nn.Module):
         return x
 
 class Encoder(nn.Module):
-    def __init__(self, num_blocks: int, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+    def __init__(self, num_blocks: int, d_model: int, d_hidden: int, num_heads: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.num_blocks = num_blocks
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_heads = num_heads
-        self.encoders = nn.ModuleList([EncoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
-        self.Lnorm = torch.nn.LayerNorm(self.d_model)
+        self.encoders = nn.ModuleList([EncoderBlock(self.d_model, self.d_hidden, self.num_heads, dropout) for _ in range(self.num_blocks)])
+        self.Lnorm = LayerNormalization(self.d_model)
 
     def forward(self, x, mask) -> torch.Tensor:
         for enc in self.encoders:
@@ -141,15 +159,15 @@ class Encoder(nn.Module):
         return self.Lnorm(x)
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+    def __init__(self, d_model: int, d_hidden: int, num_heads: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_heads = num_heads
-        self.MMHA = MultiHeadAttention(self.d_model, self.num_heads)
-        self.MHA = MultiHeadAttention(self.d_model, self.num_heads)
-        self.FF = FeedForward(self.d_model, self.d_hidden)
-        self.RCs = nn.ModuleList([ResidualConnection(self.d_model) for _ in range(3)])
+        self.MMHA = MultiHeadAttention(self.d_model, self.num_heads, dropout)
+        self.MHA = MultiHeadAttention(self.d_model, self.num_heads, dropout)
+        self.FF = FeedForward(self.d_model, self.d_hidden, dropout)
+        self.RCs = nn.ModuleList([ResidualConnection(self.d_model, dropout) for _ in range(3)])
     
     def forward(self, x, enc_k, enc_v, enc_padding_mask, dec_padding_mask) -> torch.Tensor:
         x = self.RCs[0](x, lambda x: self.MMHA(q=x, k=x, v=x, padding_mask=dec_padding_mask))
@@ -158,14 +176,14 @@ class DecoderBlock(nn.Module):
         return x
 
 class Decoder(nn.Module):
-    def __init__(self, num_blocks: int, d_model: int, d_hidden: int, num_heads: int, *args, **kwargs) -> None:
+    def __init__(self, num_blocks: int, d_model: int, d_hidden: int, num_heads: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.num_blocks = num_blocks
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_heads = num_heads
-        self.decoders = nn.ModuleList([DecoderBlock(self.d_model, self.d_hidden, self.num_heads) for _ in range(self.num_blocks)])
-        self.Lnorm = torch.nn.LayerNorm(self.d_model)
+        self.decoders = nn.ModuleList([DecoderBlock(self.d_model, self.d_hidden, self.num_heads, dropout) for _ in range(self.num_blocks)])
+        self.Lnorm = LayerNormalization(self.d_model)
     
     def forward(self, x, enc_k, enc_v, enc_padding_mask, dec_padding_mask) -> torch.Tensor:
         for dec in self.decoders:
@@ -183,14 +201,14 @@ class ProjectionLayer(nn.Module):
         return x
 
 class EncoderDecoderTransformer(nn.Module):
-    def __init__(self, num_blocks: int, num_heads: int, d_model: int, d_hidden: int, enc_vocab_size: int, dec_vocab_size: int, max_seq_len: int, *args, **kwargs) -> None:
+    def __init__(self, num_blocks: int, num_heads: int, d_model: int, d_hidden: int, enc_vocab_size: int, dec_vocab_size: int, max_seq_len: int, dropout: float, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.encoder = Encoder(num_blocks, d_model, d_hidden, num_heads)
-        self.decoder = Decoder(num_blocks, d_model, d_hidden, num_heads)
+        self.encoder = Encoder(num_blocks, d_model, d_hidden, num_heads, dropout)
+        self.decoder = Decoder(num_blocks, d_model, d_hidden, num_heads, dropout)
         self.projection = ProjectionLayer(d_model, dec_vocab_size)
         self.enc_vocab = WordEmbeddings(d_model, enc_vocab_size)
         self.dec_vocab = WordEmbeddings(d_model, dec_vocab_size)
-        self.positional_enc = PositionalEmbeddings(d_model, max_seq_len)
+        self.positional_enc = PositionalEmbeddings(d_model, max_seq_len, dropout)
     
     def encode(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         x = self.enc_vocab(x)

@@ -28,13 +28,13 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--num_blocks",
-        default=8,
+        default=6,
         type=int,
         help="Number of blocks of encoders and decoders in transformer architecture",
     )
     parser.add_argument(
         "--epochs",
-        default=100,
+        default=30,
         type=int,
         help="Number of training epochs",
     )
@@ -46,9 +46,21 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--batch_size",
-        default=32,
+        default=16,
         type=int,
         help="Training batch size"
+    )
+    parser.add_argument(
+        "--dropout",
+        default=0.1,
+        type=float,
+        help="Model dropout p"
+    )
+    parser.add_argument(
+        "--model_path",
+        default="",
+        type=str,
+        help="Continue training model from model_path",
     )
 
     return parser.parse_args()

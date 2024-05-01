@@ -93,7 +93,7 @@ class MultiHeadAttention(torch.nn.Module):
         self.w_v = torch.nn.Linear(self.d_model, self.d_model, bias=False)
         self.w_o = torch.nn.Linear(self.d_model, self.d_model, bias=False)
     
-    @staticmethod
+    
     def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dropout: float, padding_mask: torch.Tensor = None) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
         denominator = math.sqrt(self.d_k)
@@ -121,7 +121,7 @@ class MultiHeadAttention(torch.nn.Module):
         k_ = k_.view((k_.shape[0], k_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
         v_ = v_.view((v_.shape[0], v_.shape[1], self.num_heads, int(self.d_k))).transpose(1, 2).type(dtype=torch.float32)
 
-        attn_heads = MultiHeadAttention.attention(q_, k_, v_, padding_mask, self.dropout)
+        attn_heads = self.attention(q_, k_, v_, padding_mask, self.dropout)
         attn_heads = attn_heads.transpose(1, 2).contiguous().view(attn_heads.shape[0], -1, int(self.num_heads * self.d_k))
 
         out = self.w_o(attn_heads)

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
 #SBATCH --time=06:00:00
-#SBATCH --output=logs/multi_gpu_%j.out
+#SBATCH --output=logs/single_node_%j.out
 
 module purge
 module load cuda

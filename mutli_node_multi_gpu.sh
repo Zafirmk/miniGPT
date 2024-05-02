@@ -6,8 +6,8 @@
 #SBATCH --gpus-per-task=4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
-#SBATCH --time=06:00:00
-#SBATCH --output=logs/multi_gpu_%j.out
+#SBATCH --time=60:00:00
+#SBATCH --output=logs/multi_node_%j.out
 
 module purge
 module load cuda
@@ -36,4 +36,4 @@ srun ~/projects/def-eugenium/zafirmk/miniGPT/testenv/bin/torchrun \
     --rdzv_id $RANDOM \
     --rdzv_backend c10d \
     --rdzv_endpoint $head_node_ip:29500 \
-    main.py
+    ~/projects/def-eugenium/zafirmk/miniGPT/main.py --epoch=500 --batch_size=32

@@ -94,7 +94,7 @@ class MultiHeadAttention(torch.nn.Module):
         self.w_o = torch.nn.Linear(self.d_model, self.d_model, bias=False)
     
     
-    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dropout: float, padding_mask: torch.Tensor = None) -> torch.Tensor:
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, padding_mask: torch.Tensor = None, dropout: float = None) -> torch.Tensor:
         numerator = q @ k.transpose(-2, -1)
         denominator = math.sqrt(self.d_k)
         attn_logits = (numerator / denominator)
